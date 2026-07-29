@@ -28,6 +28,7 @@ from typing import List, Optional, Tuple
 import cvxpy as cp
 import numpy as np
 from scipy.optimize import minimize
+from tqdm import tqdm
 
 from config import MPCConfig
 from estimation import KalmanFilter
@@ -389,8 +390,23 @@ class MPCWeightOptimiser:
             "Optimising MPC weights (Nelder-Mead, %d iterations) ...",
             self._cfg.weight_opt_iterations,
         )
+        
+        # Create progress bar wrapper for objective function evaluations
+        pbar = tqdm(
+            total=self._cfg.weight_opt_iterations,
+            desc="MPC Weight Optimization",
+            unit="eval",
+            ncols=80,
+        )
+        
+        def objective_with_progress(log_params: np.ndarray) -> float:
+            """Wrapper that updates progress bar on each evaluation."""
+            cost = self._closed_loop_cost(log_params)
+            pbar.update(1)
+            return cost
+        
         res = minimize(
-            self._closed_loop_cost,
+            objective_with_progress,
             x0,
             method="Nelder-Mead",
             options={
@@ -400,6 +416,8 @@ class MPCWeightOptimiser:
                 "disp": False,
             },
         )
+        
+        pbar.close()
 
         params = np.exp(res.x)
         Q_opt  = np.diag(params[:n_y])
