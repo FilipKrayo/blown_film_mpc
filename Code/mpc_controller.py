@@ -343,7 +343,9 @@ class MPCWeightOptimiser:
     ----------
     controller    : MPCController instance to tune
     kalman_filter : KalmanFilter for state estimation
-    U_val, Y_val  : validation data for closed-loop simulation
+    reduced_model : ReducedModel used as the plant for closed-loop rollout
+    U_val, Y_val  : validation data (used only to size the rollout horizon
+                    and to seed a representative disturbance level)
     cfg           : MPCConfig
     """
 
@@ -351,15 +353,17 @@ class MPCWeightOptimiser:
         self,
         controller: MPCController,
         kalman_filter: KalmanFilter,
+        reduced_model: ReducedModel,
         U_val: np.ndarray,
         Y_val: np.ndarray,
         cfg: MPCConfig = MPCConfig(),
     ) -> None:
-        self._ctrl = controller
-        self._kf   = kalman_filter
-        self._U    = U_val
-        self._Y    = Y_val
-        self._cfg  = cfg
+        self._ctrl  = controller
+        self._kf    = kalman_filter
+        self._model = reduced_model
+        self._U     = U_val
+        self._Y     = Y_val
+        self._cfg   = cfg
         self._history: List[float] = []
 
     # ------------------------------------------------------------------
@@ -409,7 +413,12 @@ class MPCWeightOptimiser:
 
     # ------------------------------------------------------------------
     def _closed_loop_cost(self, log_params: np.ndarray) -> float:
-        """Evaluate closed-loop cost for given log-scale parameters."""
+        """
+        Evaluate the closed-loop tracking + effort cost for a given set
+        of log-scale Q/R parameters by actually rolling out the plant
+        model under MPC control (not simply replaying validation data,
+        which would be independent of the tuned weights).
+        """
         params = np.exp(log_params)
         n_y    = self._ctrl._n_y
         n_u    = self._ctrl._n_u
@@ -418,21 +427,36 @@ class MPCWeightOptimiser:
         self._ctrl.Q = np.diag(params[:n_y])
         self._ctrl.R = np.diag(params[n_y:])
 
-        T   = min(200, len(self._U))
-        kf  = self._kf.clone()
+        T       = min(200, len(self._U))
+        kf      = self._kf.clone()
         kf.reset()
-        u   = np.zeros(n_u)
+        u       = np.zeros(n_u)
+        y_ref   = np.zeros(n_y)
+
+        # Seed a non-trivial initial plant state from the first validation
+        # measurement so the optimiser evaluates genuine disturbance
+        # rejection rather than trivially regulating a system already at
+        # the origin (which would make the cost insensitive to Q/R).
+        x_est0  = kf.update(self._Y[0], u)
+        x_plant = x_est0[: self._model.n_states].copy()
+        kf.reset()
+
         Y_cl = np.zeros((T, n_y))
-        y_ref = np.zeros(n_y)
+        U_cl = np.zeros((T, n_u))
 
         for t in range(T):
-            x   = kf.update(self._Y[t], u)
-            res = self._ctrl.solve(x, y_ref, u)
-            u   = res.u_opt
-            Y_cl[t] = self._Y[t]
+            y_meas = self._model.C_d @ x_plant + self._model.D_d @ u
+            Y_cl[t] = y_meas
+
+            x_est   = kf.update(y_meas, u)
+            res     = self._ctrl.solve(x_est, y_ref, u)
+            u       = res.u_opt
+            U_cl[t] = u
+
+            x_plant = self._model.A_d @ x_plant + self._model.B_d @ u
 
         tracking = float(np.mean((Y_cl - y_ref) ** 2))
-        effort   = self._cfg.weight_opt_lambda * float(np.mean(u ** 2))
+        effort   = self._cfg.weight_opt_lambda * float(np.mean(U_cl ** 2))
         cost     = tracking + effort
         self._history.append(cost)
         return cost

@@ -4,8 +4,12 @@ model_reduction.py
 Model order reduction pipeline:
   1. Balanced truncation via discrete Gramians
   2. POD / Galerkin projection on state snapshots
-  3. ZOH discretisation (if input model is continuous)
-  4. Integrator augmentation for offset-free MPC
+  3. Integrator augmentation for offset-free MPC
+
+Note: the model produced by ``SubspaceIdentifier`` is already
+discrete-time (identified directly from sampled data at Ts), so no
+further ZOH discretisation is performed here — both reduction stages
+operate natively in the discrete-time domain.
 
 Classes
 -------
@@ -25,7 +29,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
-from scipy import linalg
 from scipy.linalg import cholesky, solve_discrete_lyapunov, svd
 
 from config import ReductionConfig
@@ -93,9 +96,8 @@ class ReducedModel:
 
 class ModelReducer:
     """
-    Applies balanced truncation, POD/Galerkin projection,
-    ZOH discretisation and integrator augmentation to a
-    StateSpaceModel.
+    Applies balanced truncation, POD/Galerkin projection, and
+    integrator augmentation to a StateSpaceModel.
 
     Parameters
     ----------
@@ -141,11 +143,16 @@ class ModelReducer:
         # Stage 2: POD / Galerkin on state snapshots
         A_r, B_r, C_r = self._pod_galerkin(A_r, B_r, C_r, model.B.shape[1])
 
-        # Stage 3: ZOH discretisation
-        A_d, B_d = self._discretise(A_r, B_r)
+        # The input model is already discrete-time (identified directly
+        # from sampled data by N4SID at Ts), and both balanced truncation
+        # and POD/Galerkin above operate on the discrete-time matrices.
+        # No further (ZOH) discretisation is required or correct here —
+        # re-discretising via matrix-exponential would treat the already
+        # discrete A_r as a continuous-time generator and destabilise it.
+        A_d, B_d = A_r, B_r
         C_d, D_d = C_r.copy(), D_r.copy()
 
-        # Stage 4: integrator augmentation
+        # Stage 3: integrator augmentation
         A_aug, B_aug, C_aug = self._augment(A_d, B_d, C_d)
 
         reduced = ReducedModel(
@@ -265,20 +272,6 @@ class ModelReducer:
 
         Phi = U_pod[:, :r_pod]
         return Phi.T @ A_r @ Phi, Phi.T @ B_r, C_r @ Phi
-
-    def _discretise(
-        self,
-        A_r: np.ndarray,
-        B_r: np.ndarray,
-    ):
-        """ZOH discretisation via matrix exponential."""
-        logger.info("Discretising with Ts=%.1fs (ZOH) ...", self._Ts)
-        n, m = A_r.shape[0], B_r.shape[1]
-        M    = np.zeros((n + m, n + m))
-        M[:n, :n] = A_r * self._Ts
-        M[:n, n:] = B_r * self._Ts
-        E    = linalg.expm(M)
-        return E[:n, :n], E[:n, n:]
 
     @staticmethod
     def _augment(

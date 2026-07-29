@@ -9,7 +9,7 @@ Execution order
 1.  Data loading / synthetic generation
 2.  N4SID system identification
 3.  Parameter optimisation (optional)
-4.  Model order reduction (BT + POD + ZOH + augmentation)
+4.  Model order reduction (BT + POD + integrator augmentation)
 5.  Kalman filter design
 6.  Model validation on test set
 7.  MPC controller construction
@@ -22,11 +22,11 @@ Usage
     # With real data:
     python main.py --data path/to/data.csv
 
-    # With synthetic data (default):
-    python main.py --synth
+    # With synthetic data (default — omit --data):
+    python main.py
 
     # Skip weight optimisation (faster):
-    python main.py --synth --no_weight_opt
+    python main.py --no_weight_opt
 
 Author : Blown Film MPC Project
 """
@@ -36,7 +36,22 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 import warnings
+
+# ── Console encoding ─────────────────────────────────────────────────────────
+# The report and log messages use Unicode box-drawing characters (─, █) and
+# symbols (², ₀). On Windows, the default console code page (cp1252) cannot
+# encode these and raises UnicodeEncodeError when printing. Force UTF-8 output
+# streams so the pipeline runs identically on every platform.
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name)
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
 
 import numpy as np
 
@@ -278,6 +293,7 @@ class BlownFilmPipeline:
             weight_opt = MPCWeightOptimiser(
                 controller=self._mpc,
                 kalman_filter=self._kf,
+                reduced_model=self._reduced,
                 U_val=ds.U_test,
                 Y_val=ds.Y_test,
                 cfg=cfg,
