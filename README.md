@@ -1,4 +1,4 @@
-# 🎬 Blown Film MPC
+# Blown Film MPC
 
 > **Data-driven System Identification and Model Predictive Control
 > for a Co-Extrusion Blown Film Manufacturing Line**

@@ -3,6 +3,3 @@
 
 # Ignore environmental files
 *.venv
-
-# Ignore generated outputs (figures, reports)
-Code/outputs/*
