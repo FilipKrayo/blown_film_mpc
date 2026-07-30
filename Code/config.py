@@ -648,7 +648,7 @@ class MPCConfig:
     q_default_weight: float = 1.0
     r_weight: float = 0.05
     s_weight: float = 0.01
-    optimise_weights: bool = True
+    optimise_weights: bool = False      # off by default — opt in via --optimise_weights
     weight_opt_iterations: int = 20
     weight_opt_lambda: float = 0.1
 

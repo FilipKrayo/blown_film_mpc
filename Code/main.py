@@ -7,15 +7,27 @@ System Identification and MPC project.
 Execution order
 ---------------
 1.  Data loading / synthetic generation
-2.  N4SID system identification
-3.  Parameter optimisation (optional)
-4.  Model order reduction (BT + POD + integrator augmentation)
-5.  Kalman filter design
-6.  Model validation on test set
-7.  MPC controller construction
-8.  MPC weight optimisation (optional)
-9.  Closed-loop simulation
-10. Report generation
+2.  Model (N4SID identification + reduction) — loaded from cache if
+    available, otherwise built fresh and cached for next time
+3.  Kalman filter design
+4.  Model validation on test set
+5.  MPC controller construction — tuned weights loaded from cache if
+    available; MPC weight optimisation is off by default (opt in with
+    --optimise_weights)
+6.  Closed-loop simulation
+7.  Report generation
+
+Caching
+-------
+Two pipeline artefacts are cached to disk (see ``persistence.py``) so
+repeated runs don't have to redo expensive work:
+
+  * the identified + reduced plant model (``--model_path``)
+  * the tuned MPC weights (``--controller_path``)
+
+Both default to "try load from disk; if missing, build fresh and save
+for next time". Use ``--optimise_model`` / ``--optimise_weights`` to
+force a fresh build even when a cache is present.
 
 Usage
 -----
@@ -25,8 +37,11 @@ Usage
     # With synthetic data (default — omit --data):
     python main.py
 
-    # Skip weight optimisation (faster):
-    python main.py --no_weight_opt
+    # Force a fresh model (ignore cached one):
+    python main.py --optimise_model
+
+    # Force MPC weight (re-)optimisation (ignore cached weights):
+    python main.py --optimise_weights
 
 Author : Blown Film MPC Project
 """
@@ -69,6 +84,7 @@ from data_manager import DataManager, IODataset
 from estimation import KalmanFilter
 from model_reduction import ModelReducer, ReducedModel
 from mpc_controller import MPCController, MPCWeightOptimiser
+from persistence import ControllerWeightsStore, ModelStore
 from simulation import ClosedLoopSimulator, ModelValidator, SimulationResult
 from system_identification import (
     ParameterOptimiser,
@@ -97,10 +113,14 @@ class BlownFilmPipeline:
 
     Parameters
     ----------
-    cfg        : ProjectConfig (all sub-configs bundled)
-    data_path  : path to real data file (None → use synthetic)
-    output_dir : directory for figures and report
-    show_plots : whether to display figures interactively
+    cfg             : ProjectConfig (all sub-configs bundled)
+    data_path       : path to real data file (None → use synthetic)
+    output_dir      : directory for figures and report
+    show_plots      : whether to display figures interactively
+    model_path      : path to load/save the cached reduced model
+    controller_path : path to load/save the cached MPC weights
+    force_new_model : ignore any cached model and identify/reduce a
+                      fresh one (see --optimise_model)
     """
 
     def __init__(
@@ -109,10 +129,17 @@ class BlownFilmPipeline:
         data_path: str | None = None,
         output_dir: str = "outputs",
         show_plots: bool = True,
+        model_path: str = os.path.join("saved", "reduced_model.pkl"),
+        controller_path: str = os.path.join("saved", "mpc_weights.pkl"),
+        force_new_model: bool = False,
     ) -> None:
         self._cfg        = cfg
         self._data_path  = data_path
         self._output_dir = output_dir
+
+        self._model_path      = model_path
+        self._controller_path = controller_path
+        self._force_new_model = force_new_model
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -136,8 +163,7 @@ class BlownFilmPipeline:
         np.random.seed(self._cfg.data.random_seed)
 
         self._stage_data()
-        self._stage_identification()
-        self._stage_reduction()
+        self._stage_model()
         self._stage_kalman()
         self._stage_validation()
         self._stage_mpc()
@@ -168,6 +194,40 @@ class BlownFilmPipeline:
             f"Outputs n_y   : {ds.n_outputs}\n"
             f"Sampling time : {self._cfg.data.sampling_time} s",
         )
+
+    # ------------------------------------------------------------------
+    def _stage_model(self) -> None:
+        """
+        Produce ``self._reduced``, either by loading a cached
+        ``ReducedModel`` from disk or by running identification +
+        reduction fresh (and caching the result for next time).
+
+        A fresh build is forced when ``self._force_new_model`` is set
+        (--optimise_model) or when no valid cache is found.
+        """
+        logger.info("━━━ STAGE 2-3: Model (Identification + Reduction) ━━━")
+
+        cached = None
+        if not self._force_new_model:
+            cached = ModelStore.load(self._model_path)
+        elif os.path.isfile(self._model_path):
+            logger.info(
+                "--optimise_model set — ignoring cached model at %s.",
+                self._model_path,
+            )
+
+        if cached is not None:
+            self._reduced = cached
+            self._report.add_section(
+                "2-3. Model (Identification + Reduction)",
+                f"Loaded cached model from : {self._model_path}\n"
+                f"{self._reduced!r}",
+            )
+            return
+
+        self._stage_identification()
+        self._stage_reduction()
+        ModelStore.save(self._reduced, self._model_path)
 
     # ------------------------------------------------------------------
     def _stage_identification(self) -> None:
@@ -280,9 +340,15 @@ class BlownFilmPipeline:
 
     # ------------------------------------------------------------------
     def _stage_mpc(self) -> None:
+        """
+        Build the MPC controller with fixed config weights, then
+        either apply cached tuned weights, run the weight optimiser
+        fresh (--optimise_weights), or fall back to the fixed config
+        weights untouched — whichever applies.
+        """
         logger.info("━━━ STAGE 6: MPC Design ━━━")
-        cfg       = self._cfg.mpc
-        ds        = self._dataset
+        cfg = self._cfg.mpc
+        ds  = self._dataset
 
         self._mpc = MPCController(
             reduced_model=self._reduced,
@@ -299,10 +365,26 @@ class BlownFilmPipeline:
                 cfg=cfg,
             )
             Q_opt, R_opt = weight_opt.optimise()
-            self._mpc.Q  = Q_opt
-            self._mpc.R  = R_opt
-
+            self._mpc.set_weights(Q_opt, R_opt)
             self._plotter.plot_weight_optimisation(weight_opt.cost_history)
+
+            ControllerWeightsStore.save(Q_opt, R_opt, self._controller_path)
+            weights_source = "optimised now (Nelder-Mead) and cached"
+        else:
+            cached = ControllerWeightsStore.load(
+                self._controller_path, n_y=ds.n_outputs, n_u=ds.n_inputs,
+            )
+            if cached is not None:
+                self._mpc.set_weights(cached.Q, cached.R)
+                weights_source = f"loaded from cache ({self._controller_path})"
+                if self._force_new_model:
+                    logger.warning(
+                        "Using cached MPC weights tuned against a previous "
+                        "model (--optimise_model was set) — consider also "
+                        "passing --optimise_weights to re-tune them."
+                    )
+            else:
+                weights_source = "fixed config defaults (not optimised)"
 
         self._report.add_section(
             "6. MPC Configuration",
@@ -314,7 +396,7 @@ class BlownFilmPipeline:
             f"QP size               : "
             f"{cfg.control_horizon * ds.n_inputs} variables\n"
             f"Solver                : OSQP (warm-start)\n"
-            f"Weight optimisation   : {cfg.optimise_weights}",
+            f"MPC weights           : {weights_source}",
         )
 
     # ------------------------------------------------------------------
@@ -422,8 +504,31 @@ def _parse_args() -> argparse.Namespace:
         help="Skip parameter optimisation after N4SID",
     )
     parser.add_argument(
-        "--no_weight_opt", action="store_true",
-        help="Skip MPC weight optimisation",
+        "--optimise_weights", action="store_true",
+        help=(
+            "Run MPC weight optimisation (Nelder-Mead), ignoring any "
+            "cached weights, and cache the result. Off by default: "
+            "loads cached weights if available, otherwise uses fixed "
+            "config weights."
+        ),
+    )
+    parser.add_argument(
+        "--optimise_model", action="store_true",
+        help=(
+            "Force fresh identification + reduction, ignoring any "
+            "cached model, and cache the result. Off by default: "
+            "loads the cached model if available."
+        ),
+    )
+    parser.add_argument(
+        "--model_path", type=str,
+        default=os.path.join("saved", "reduced_model.pkl"),
+        help="Path to load/save the cached reduced model",
+    )
+    parser.add_argument(
+        "--controller_path", type=str,
+        default=os.path.join("saved", "mpc_weights.pkl"),
+        help="Path to load/save the cached MPC weights",
     )
     parser.add_argument(
         "--no_show", action="store_true",
@@ -446,7 +551,7 @@ def main() -> None:
         mpc=MPCConfig(
             prediction_horizon=args.Np,
             control_horizon=args.Nc,
-            optimise_weights=not args.no_weight_opt,
+            optimise_weights=args.optimise_weights,
         ),
         simulation=SimulationConfig(n_steps=args.T_sim),
         output_dir=args.output_dir,
@@ -457,6 +562,9 @@ def main() -> None:
         data_path=args.data,
         output_dir=args.output_dir,
         show_plots=not args.no_show,
+        model_path=args.model_path,
+        controller_path=args.controller_path,
+        force_new_model=args.optimise_model,
     )
     pipeline.run()
 

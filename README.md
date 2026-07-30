@@ -26,6 +26,8 @@
 - [Pipeline Stages](#-pipeline-stages)
 - [Outputs](#-outputs)
 - [Dataset Format](#-dataset-format)
+- [Performance Notes](#-performance-notes)
+- [Model & Weight Caching](#-model--weight-caching)
 - [OOP Design Principles](#-oop-design-principles)
 - [Dependencies](#-dependencies)
 - [Troubleshooting](#-troubleshooting)
@@ -158,7 +160,12 @@ blown_film_mpc/
     ├── estimation.py                # Kalman filter & state estimation
     ├── mpc_controller.py            # MPC design, QP solver & weight optimisation
     ├── simulation.py                # Closed-loop simulator & model validation
+    ├── persistence.py               # Save/load cache for reduced model & tuned MPC weights
     ├── utils.py                     # Plotting, reporting & helper utilities
+    │
+    ├── saved/                       # Cached reduced model & tuned MPC weights (git-ignored)
+    │   ├── reduced_model.pkl
+    │   └── mpc_weights.pkl
     │
     └── outputs/                     # Auto-generated figures and reports
         ├── singular_values.png
@@ -259,8 +266,8 @@ MPC design and real-time QP solving.
 |-------|---------------|
 | `PredictionMatrices` | Immutable (F, G) prediction matrices |
 | `MPCResult` | Immutable result of a single QP solve |
-| `MPCController` | Builds and solves the MPC QP at each step |
-| `MPCWeightOptimiser` | Nelder-Mead tuning of Q, R in log-space |
+| `MPCController` | Builds the MPC QP **once** as a parametrised CVXPY problem and solves it every step by updating `cp.Parameter` values (state, reference, previous input) rather than rebuilding the problem from scratch — see [Performance Notes](#-performance-notes) |
+| `MPCWeightOptimiser` | Nelder-Mead tuning of 4 group-level Q/R weights in log-space |
 
 **Priority weighting (default):**
 
@@ -284,6 +291,18 @@ Closed-loop simulation and open-loop validation.
 
 ---
 
+### `persistence.py`
+Save/load cache for the two expensive-to-compute pipeline artefacts —
+see [Model & Weight Caching](#-model--weight-caching).
+
+| Class | Responsibility |
+|-------|---------------|
+| `MPCWeights` | Immutable (Q, R) weight snapshot |
+| `ModelStore` | Save/load a `ReducedModel` pickle |
+| `ControllerWeightsStore` | Save/load an `MPCWeights` pickle, with shape validation against the current model |
+
+---
+
 ### `utils.py`
 Visualisation and reporting.
 
@@ -299,7 +318,7 @@ Top-level pipeline orchestrator.
 
 | Class | Responsibility |
 |-------|---------------|
-| `BlownFilmPipeline` | Runs all 8 stages in order, wires modules together |
+| `BlownFilmPipeline` | Runs all pipeline stages in order (loading cached model/weights where available), wires modules together |
 
 CLI entry point with `argparse` — see [Usage](#-usage).
 
@@ -364,7 +383,9 @@ via command-line flags — there is no separate flag for synthetic data;
 it is used automatically whenever `--data` is omitted.
 
 ```bash
-# Synthetic data, all defaults
+# Synthetic data, all defaults (loads cached model/weights if present,
+# otherwise builds them fresh and caches them — weight optimisation
+# is off by default)
 python main.py
 
 # Real data
@@ -373,8 +394,11 @@ python main.py --data ../extrusion.csv
 # Custom model orders and MPC horizons
 python main.py --data ../extrusion.csv --n_id 20 --n_red 12 --Np 20 --Nc 8
 
-# Skip MPC weight optimisation (much faster)
-python main.py --no_weight_opt
+# Run MPC weight optimisation (off by default) and cache the result
+python main.py --optimise_weights
+
+# Force a fresh model (ignore the cached one) and cache the new result
+python main.py --optimise_model
 
 # Skip N4SID parameter refinement
 python main.py --no_param_opt
@@ -396,8 +420,12 @@ python main.py --no_show --output_dir results
 | `--Nc` | `8` | MPC control horizon |
 | `--T_sim` | `300` | Closed-loop simulation steps |
 | `--no_param_opt` | `False` | Skip parameter optimisation after N4SID |
-| `--no_weight_opt` | `False` | Skip MPC weight optimisation |
+| `--optimise_weights` | `False` | Run MPC weight optimisation (Nelder-Mead), ignoring any cached weights, and cache the result |
+| `--optimise_model` | `False` | Force fresh identification + reduction, ignoring any cached model, and cache the result |
+| `--model_path` | `saved/reduced_model.pkl` | Path to load/save the cached reduced model |
+| `--controller_path` | `saved/mpc_weights.pkl` | Path to load/save the cached MPC weights |
 | `--no_show` | `False` | Do not display figures interactively |
+
 
 ---
 
@@ -477,6 +505,74 @@ exercised without real plant data.
 
 ---
 
+## ⚡ Performance Notes
+
+`MPCWeightOptimiser.optimise()` used to be the slowest part of the
+pipeline — a single run could solve tens of thousands of QPs. Three
+changes brought this down without changing the underlying QP or the
+weights it converges to:
+
+1. **Stopped rebuilding the prediction matrices on every weight
+   change.** `PredictionMatrices` (`F`, `G`) depend only on the plant
+   model, never on `Q`/`R`, but the `Q`/`R` setters used to trigger a
+   full rebuild anyway. They no longer do.
+2. **Built the QP once instead of once per solve.** `MPCController`
+   now constructs a single CVXPY `Problem` with `cp.Parameter` objects
+   for the state estimate, reference and previous input — the three
+   quantities that actually change on every `solve()` call. Only
+   `Q`/`R` changes (via `set_weights()`) trigger a rebuild, which
+   happens once per closed-loop rollout during weight tuning (and
+   essentially never for the deployed controller) instead of once per
+   time step. This also lets OSQP's warm start carry a real
+   factorisation across steps, which was previously lost because a
+   brand-new `Problem` was created on every call.
+3. **Reduced the weight search space from `n_y + n_u` (48) to 4
+   group-level weights** — one each for layer-thickness outputs,
+   melt-temperature outputs, all other outputs, and a uniform
+   input-rate weight — mirroring the grouping already used for the
+   fixed default weights. This shrinks Nelder-Mead's initial simplex
+   and the iterations needed to converge, independent of how many
+   inputs/outputs the identified model has.
+
+All three preserve the exact QP being solved (same cost, same
+constraints, same solver/tolerances), so they only remove wasted
+computation rather than trading off tuning accuracy.
+
+---
+
+## 💾 Model & Weight Caching
+
+Identification/reduction and MPC weight optimisation are the two most
+expensive stages, so their results are cached to disk and reused by
+default instead of being recomputed on every run:
+
+| Artefact | Cache file (default) | Behaviour |
+|----------|-----------------------|-----------|
+| Reduced model | `saved/reduced_model.pkl` | Loaded automatically if present. Use `--optimise_model` to force a fresh N4SID + reduction run and overwrite the cache. |
+| MPC weights (`Q`, `R`) | `saved/mpc_weights.pkl` | Loaded automatically if present **and** `--optimise_weights` was not passed. Use `--optimise_weights` to force a fresh Nelder-Mead tune and overwrite the cache. |
+
+Key points:
+
+- **Weight optimisation is off by default.** A fresh run with no cache
+  and no flags builds a new model (caching it) and an MPC controller
+  with the fixed config weights from `config.py` (not cached, since
+  they weren't tuned). Pass `--optimise_weights` whenever you want
+  tuned weights, cached or not.
+- Cached MPC weights are validated against the current model's
+  `(n_y, n_u)` before being applied; a shape mismatch (e.g. after
+  changing the output/input columns) is logged and the cache is
+  ignored rather than silently misapplied.
+- Only the tuned `Q`/`R` arrays are cached for the controller — not
+  the live `MPCController` object itself, since it holds a CVXPY
+  `Problem`/`Parameter` state that isn't meaningful to serialise. A
+  fresh `MPCController` is always constructed from
+  (`reduced_model`, `cfg`) and the cached weights are applied via
+  `set_weights()`.
+- Both cache paths are configurable via `--model_path` /
+  `--controller_path`, and `saved/` is git-ignored.
+
+---
+
 ## 🧱 OOP Design Principles
 
 - **Single Responsibility** — each module owns one pipeline concern
@@ -516,7 +612,8 @@ See [`requirements.txt`](requirements.txt):
 | `UnicodeEncodeError` when running on Windows | Fixed in `main.py` by forcing UTF-8 stdout/stderr; ensure you're running the current version of the script. |
 | Validation metrics are `NaN` | Usually an unstable reduced model. Confirm `ReducedModel.A_d` has spectral radius < 1 (logged at Stage 3); try a smaller `--n_red`. |
 | Poor validation R² with real data | Increase `--n_id`/`--n_red`, provide more training samples, or check that CSV column names match `config.py`. |
-| Slow runs with weight optimisation | Use `--no_weight_opt`, or reduce `--T_sim`, `--Np`, `--Nc` for faster smoke tests. |
+| Slow runs with weight optimisation | Weight optimisation is off by default. See [Performance Notes](#-performance-notes) for what already speeds `--optimise_weights` up when you do use it; otherwise reduce `--T_sim`, `--Np`, `--Nc` for faster smoke tests. |
+| Stale/unexpected results after changing the model or data | The cached model/weights in `saved/` are reused by default — pass `--optimise_model` (and `--optimise_weights` if needed) to force a fresh build, or delete the `saved/` folder. |
 | `Files above 50MB cannot be...` type errors when inspecting data | Large CSVs should be read by `pandas`/the pipeline itself, not by generic text-file tools. |
 
 ---
@@ -527,7 +624,7 @@ Contributions are welcome. Please:
 
 1. Follow the existing OOP structure and PEP 8 style.
 2. Keep configuration values in `config.py` — avoid hardcoding constants.
-3. Add/update tests or a smoke-test run (`python main.py --no_show --T_sim 5 --n_id 8 --n_red 5 --no_weight_opt`) before submitting a PR.
+3. Add/update tests or a smoke-test run (`python main.py --no_show --T_sim 5 --n_id 8 --n_red 5`) before submitting a PR.
 4. Open an issue describing the change before large refactors.
 
 ---

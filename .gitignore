@@ -3,3 +3,6 @@
 
 # Ignore environmental files
 *.venv
+
+# Ignore cached pipeline artefacts (reduced model / tuned MPC weights)
+saved/
