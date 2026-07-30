@@ -4,5 +4,9 @@
 # Ignore environmental files
 *.venv
 
+# Ignore Python bytecode cache
+__pycache__/
+*.pyc
+
 # Ignore cached pipeline artefacts (reduced model / tuned MPC weights)
 saved/
