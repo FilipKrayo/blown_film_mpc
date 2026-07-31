@@ -199,7 +199,7 @@ class SubspaceIdentifier:
 
         # SVD for order selection
         U_svd, S, _ = svd(O_i, full_matrices=False)
-        self._sv     = S
+        self._sv    = S
 
         # Truncate to model order
         n   = min(n, len(S))

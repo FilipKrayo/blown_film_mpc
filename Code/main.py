@@ -657,11 +657,11 @@ def _parse_args() -> argparse.Namespace:
         help="Directory for figures and report",
     )
     parser.add_argument(
-        "--n_id", type=int, default=20,
+        "--n_id", type=int, default=145,
         help="N4SID model order",
     )
     parser.add_argument(
-        "--n_red", type=int, default=12,
+        "--n_red", type=int, default=22,
         help="Target order after balanced truncation",
     )
     parser.add_argument(
@@ -669,7 +669,7 @@ def _parse_args() -> argparse.Namespace:
         help="Required worst-case per-output R² (accuracy gate)",
     )
     parser.add_argument(
-        "--max_n_states", type=int, default=60,
+        "--max_n_states", type=int, default=100,
         help="Ceiling for automatic N4SID order escalation on gate failure",
     )
     parser.add_argument(

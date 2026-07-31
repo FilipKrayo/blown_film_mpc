@@ -594,7 +594,7 @@ INPUT_COLS: List[str] = [
 class DataConfig:
     """Parameters governing data loading and preprocessing."""
 
-    sampling_time: float = 3.0          # seconds
+    sampling_time: float = 120.0          # seconds
     train_fraction: float = 0.70
     outlier_zscore: float = 5.0
     ffill_limit: int = 5
