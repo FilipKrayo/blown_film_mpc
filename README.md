@@ -206,13 +206,13 @@ to the **convection–diffusion–reaction** equation:
 
 $$
 \rho_k c_{p,k}
-\frac{\partial T_k}{\partial t}
-+ \rho_k c_{p,k}\,v_{z,k}
+\frac{\partial T_k}{\partial t} +
+\rho_k c_{p,k}\,v_{z,k}
 \frac{\partial T_k}{\partial z}
 = \lambda_k
-\frac{\partial^2 T_k}{\partial z^2}
-+ \underbrace{\eta_k\,\dot{\gamma}_k^2}_{\text{viscous dissipation}}
-+ \underbrace{\dot{q}_{wall,k}(z,t)}_{\text{barrel heating}}
+\frac{\partial^2 T_k}{\partial z^2} +
+\underbrace{\eta_k\,\dot{\gamma}_k^2}_{\text{viscous dissipation}} +
+\underbrace{\dot{q}_{wall,k}(z,t)}_{\text{barrel heating}}
 $$
 
 | Symbol | Description | Unit |
@@ -236,8 +236,8 @@ $$
 $$
 \frac{dT_{set,k,j}}{dt}
 = \frac{1}{\tau_{k,j}}
-\bigl(T_{sp,k,j} - T_{set,k,j}\bigr)
-- K_{P,k,j}\,e_{k,j}(t)
+\bigl(T_{sp,k,j} - T_{set,k,j}\bigr) -
+K_{P,k,j}\,e_{k,j}(t)
 $$
 
 where $e_{k,j} = T_{set,k,j} - T_{act,k,j}$ is the zone PID
@@ -255,8 +255,8 @@ extruder, mapped from `Dos_2` through `Dos_5`):
 
 $$
 \frac{dm_{i,k}}{dt}
-= \dot{m}_{feed,i,k}
-- \rho_{bulk,i,k}\,Q_{dos,i,k}(N_{dos,i,k})
+= \dot{m}_{feed,i,k} -
+\rho_{bulk,i,k}\,Q_{dos,i,k}(N_{dos,i,k})
 $$
 
 #### 2.2 Actual Proportion
@@ -274,8 +274,8 @@ $$
 $$
 \frac{dN_{dos,i,k}}{dt}
 = K_{c,i,k}
-\bigl(\phi_{i,k}^{set} - \phi_{i,k}\bigr)
-+ \frac{K_{c,i,k}}{\tau_{I,i,k}}
+\bigl(\phi_{i,k}^{set} - \phi_{i,k}\bigr) +
+\frac{K_{c,i,k}}{\tau_{I,i,k}}
 \int_0^t
 \bigl(\phi_{i,k}^{set} - \phi_{i,k}\bigr)\,d\tau
 $$
@@ -306,10 +306,10 @@ $$
 \left(
   \frac{1}{r}
   \frac{\partial}{\partial r}
-  \!\left(r\frac{\partial T_{die}}{\partial r}\right)
-  + \frac{\partial^2 T_{die}}{\partial z^2}
-\right)
-+ \dot{q}_{heater}(r,z,t)
+  \!\left(r\frac{\partial T_{die}}{\partial r}\right) +
+  \frac{\partial^2 T_{die}}{\partial z^2}
+\right) +
+\dot{q}_{heater}(r,z,t)
 $$
 
 Zones $j = 3,\ldots,9$ are monitored via
@@ -325,8 +325,8 @@ $$
 
 $$
 \frac{du_j}{dt}
-= K_{P,j}\frac{de_j}{dt}
-+ \frac{K_{P,j}}{\tau_{I,j}}\,e_j(t),
+= K_{P,j}\frac{de_j}{dt} +
+\frac{K_{P,j}}{\tau_{I,j}}\,e_j(t),
 \qquad
 e_j = T_{sp,j} - T_{act,j}
 $$
@@ -335,8 +335,8 @@ $$
 
 $$
 \frac{\partial v_z}{\partial t}
-= -\frac{1}{\rho}\frac{\partial P}{\partial z}
-+ \frac{1}{r}\frac{\partial}{\partial r}
+= -\frac{1}{\rho}\frac{\partial P}{\partial z} +
+\frac{1}{r}\frac{\partial}{\partial r}
 \!\left(r\,\mu\frac{\partial v_z}{\partial r}\right)
 $$
 
@@ -354,8 +354,8 @@ subsystem, requiring a **moving-boundary** formulation.
 #### 4.1 Bubble Radius PDE
 
 $$
-\frac{\partial R}{\partial t}
-+ v_z\frac{\partial R}{\partial z}
+\frac{\partial R}{\partial t} +
+v_z\frac{\partial R}{\partial z}
 = \frac{R}{2}
 \bigl(\dot{\varepsilon}_\theta - \dot{\varepsilon}_z\bigr)
 $$
@@ -363,8 +363,8 @@ $$
 #### 4.2 Film Thickness Evolution PDE
 
 $$
-\frac{\partial h}{\partial t}
-+ v_z\frac{\partial h}{\partial z}
+\frac{\partial h}{\partial t} +
+v_z\frac{\partial h}{\partial z}
 = -h
 \bigl(\dot{\varepsilon}_z + \dot{\varepsilon}_\theta\bigr)
 $$
@@ -417,9 +417,9 @@ internal IBC cooling:
 $$
 \rho_f\,c_{p,f}\,h
 \frac{\partial T_f}{\partial t}
-= -h_{conv,ext}(T_f - T_{air,ext})
-- h_{conv,int}(T_f - T_{IBC})
-+ \dot{q}_{rad}
+= -h_{conv,ext}(T_f - T_{air,ext}) -
+h_{conv,int}(T_f - T_{IBC}) +
+\dot{q}_{rad}
 $$
 
 #### 5.2 IBC Air Temperature ODE (unit $l$)
@@ -427,8 +427,8 @@ $$
 $$
 \rho_{air}\,V_{IBC,l}\,c_{p,air}
 \frac{dT_{IBC,l}}{dt}
-= \dot{m}_{in,l}\,c_{p,air}(T_{in,l} - T_{IBC,l})
-- UA_l(T_{IBC,l} - T_{film})
+= \dot{m}_{in,l}\,c_{p,air}(T_{in,l} - T_{IBC,l}) -
+UA_l(T_{IBC,l} - T_{film})
 $$
 
 $$
@@ -452,8 +452,8 @@ $$
 $$
 M_{cool,l}\,c_{p,cool}
 \frac{dT_{cool,l}}{dt}
-= \dot{Q}_{in,l}
-- UA_{cool,l}(T_{cool,l} - T_{amb})
+= \dot{Q}_{in,l} -
+UA_{cool,l}(T_{cool,l} - T_{amb})
 $$
 
 ---
@@ -466,9 +466,9 @@ $$
 \frac{dv_{haul}}{dt}
 = \frac{1}{J_{haul}}
 \bigl[
-  K_v(v_{haul}^{set} - v_{haul})
-  - \sigma_{haul}\,h_{film}\,W_{film}
-  - F_{fric}
+  K_v(v_{haul}^{set} - v_{haul}) -
+  \sigma_{haul}\,h_{film}\,W_{film} -
+  F_{fric}
 \bigr]
 $$
 
@@ -527,9 +527,9 @@ $$
 
 $$
 J_w\frac{d\omega_{drum,w}}{dt}
-= T_{drive,w}
-- \sigma_{web,w}\,h_{film}\,W_{film}\,R_{roll,w}
-- B_w\,\omega_{drum,w}
+= T_{drive,w} -
+\sigma_{web,w}\,h_{film}\,W_{film}\,R_{roll,w} -
+B_w\,\omega_{drum,w}
 $$
 
 $$
@@ -763,11 +763,11 @@ $$
 \rho_k c_{p,k}
 \frac{dT_{k,j}}{dt}
 = \frac{\lambda_k}{\Delta z^2}
-\bigl(T_{k,j+1} - 2T_{k,j} + T_{k,j-1}\bigr)
-- \frac{\rho_k c_{p,k} v_{z,k}}{\Delta z}
-\bigl(T_{k,j} - T_{k,j-1}\bigr)
-+ \eta_k\dot{\gamma}_k^2
-+ \dot{q}_{wall,k,j}
+\bigl(T_{k,j+1} - 2T_{k,j} + T_{k,j-1}\bigr) -
+\frac{\rho_k c_{p,k} v_{z,k}}{\Delta z}
+\bigl(T_{k,j} - T_{k,j-1}\bigr) +
+\eta_k\dot{\gamma}_k^2 +
+\dot{q}_{wall,k,j}
 $$
 
 This converts the extruder PDE into a system of $N_z$ coupled ODEs
@@ -776,12 +776,12 @@ per extruder, which in matrix form reads:
 $$
 \frac{d\mathbf{T}_k}{dt}
 = \underbrace{
-    \frac{\lambda_k}{\rho_k c_{p,k} \Delta z^2}\mathbf{D}_2
-    - \frac{v_{z,k}}{\Delta z}\mathbf{D}_1
+    \frac{\lambda_k}{\rho_k c_{p,k} \Delta z^2}\mathbf{D}_2 -
+    \frac{v_{z,k}}{\Delta z}\mathbf{D}_1
   }_{\mathbf{M}_k}
-\mathbf{T}_k
-+ \mathbf{f}_{visc,k}
-+ \mathbf{B}_{wall,k}\mathbf{u}_{zone,k}
+\mathbf{T}_k +
+\mathbf{f}_{visc,k} +
+\mathbf{B}_{wall,k}\mathbf{u}_{zone,k}
 $$
 
 where:
@@ -801,8 +801,8 @@ The resulting ODE system is:
 $$
 \mathbf{M}_{die}
 \frac{d\mathbf{T}_{die}}{dt}
-= \mathbf{K}_{die}\mathbf{T}_{die}
-+ \mathbf{F}_{die}(\mathbf{u}_{die})
+= \mathbf{K}_{die}\mathbf{T}_{die} +
+\mathbf{F}_{die}(\mathbf{u}_{die})
 $$
 
 where $\mathbf{M}_{die}$ is the FE mass matrix,
@@ -862,8 +862,8 @@ Newton–Raphson iteration:
 
 $$
 \mathbf{x}_0^{(i+1)}
-= \mathbf{x}_0^{(i)}
-- \left[
+= \mathbf{x}_0^{(i)} -
+\left[
     \frac{\partial \mathbf{f}}{\partial \mathbf{x}}
     \bigg|_{\mathbf{x}_0^{(i)},\,\mathbf{u}_0}
   \right]^{-1}
@@ -908,13 +908,13 @@ $$
     \frac{\partial \mathbf{f}}{\partial \mathbf{x}}
     \bigg|_{\mathbf{x}_0,\,\mathbf{u}_0}
   }_{\mathbf{A}_c}
-\tilde{\mathbf{x}}
-+ \underbrace{
+\tilde{\mathbf{x}} +
+\underbrace{
     \frac{\partial \mathbf{f}}{\partial \mathbf{u}}
     \bigg|_{\mathbf{x}_0,\,\mathbf{u}_0}
   }_{\mathbf{B}_c}
-\tilde{\mathbf{u}}
-+ \underbrace{
+\tilde{\mathbf{u}} +
+\underbrace{
     \mathcal{O}\!\left(\|\tilde{\mathbf{x}}\|^2,
     \|\tilde{\mathbf{u}}\|^2\right)
   }_{\text{neglected}}
@@ -926,8 +926,8 @@ $$
     \frac{\partial \mathbf{g}}{\partial \mathbf{x}}
     \bigg|_{\mathbf{x}_0,\,\mathbf{u}_0}
   }_{\mathbf{C}_c}
-\tilde{\mathbf{x}}
-+ \underbrace{
+\tilde{\mathbf{x}} +
+\underbrace{
     \frac{\partial \mathbf{g}}{\partial \mathbf{u}}
     \bigg|_{\mathbf{x}_0,\,\mathbf{u}_0}
   }_{\mathbf{D}_c}
@@ -979,9 +979,9 @@ $$
 [\mathbf{A}_{ee}]_{k,j,j}
 = -\frac{h_{k,j}A_{k,j}P_{eff,k,j}^0
          + \dot{m}_{out,k}^0 c_{p,k}}
-        {\rho_k c_{p,k} V_{k,j}}
-- \frac{v_{z,k}}{\Delta z}
-- \frac{2\lambda_k}{\rho_k c_{p,k} \Delta z^2}
+        {\rho_k c_{p,k} V_{k,j}} -
+\frac{v_{z,k}}{\Delta z} -
+\frac{2\lambda_k}{\rho_k c_{p,k} \Delta z^2}
 $$
 
 The super- and sub-diagonal entries (axial coupling):
@@ -993,8 +993,8 @@ $$
 
 $$
 [\mathbf{A}_{ee}]_{k,j,j-1}
-= \frac{\lambda_k}{\rho_k c_{p,k} \Delta z^2}
-+ \frac{v_{z,k}}{\Delta z}
+= \frac{\lambda_k}{\rho_k c_{p,k} \Delta z^2} +
+\frac{v_{z,k}}{\Delta z}
 $$
 
 The viscosity nonlinearity contributes an additional term via
@@ -1199,12 +1199,12 @@ Assembling all blocks, the **continuous-time linearised system** is:
 $$
 \boxed{
 \dot{\tilde{\mathbf{x}}}
-= \mathbf{A}_c\,\tilde{\mathbf{x}}
-+ \mathbf{B}_c\,\tilde{\mathbf{u}},
+= \mathbf{A}_c\,\tilde{\mathbf{x}} +
+\mathbf{B}_c\,\tilde{\mathbf{u}},
 \qquad
 \tilde{\mathbf{y}}
-= \mathbf{C}_c\,\tilde{\mathbf{x}}
-+ \mathbf{D}_c\,\tilde{\mathbf{u}}
+= \mathbf{C}_c\,\tilde{\mathbf{x}} +
+\mathbf{D}_c\,\tilde{\mathbf{u}}
 }
 $$
 
@@ -1371,12 +1371,12 @@ The resulting **full-order discrete-time linearised system** is:
 $$
 \boxed{
 \tilde{\mathbf{x}}_{k+1}
-= \mathbf{A}_d\,\tilde{\mathbf{x}}_k
-+ \mathbf{B}_d\,\tilde{\mathbf{u}}_k,
+= \mathbf{A}_d\,\tilde{\mathbf{x}}_k +
+\mathbf{B}_d\,\tilde{\mathbf{u}}_k,
 \qquad
 \tilde{\mathbf{y}}_k
-= \mathbf{C}_d\,\tilde{\mathbf{x}}_k
-+ \mathbf{D}_d\,\tilde{\mathbf{u}}_k
+= \mathbf{C}_d\,\tilde{\mathbf{x}}_k +
+\mathbf{D}_d\,\tilde{\mathbf{u}}_k
 }
 $$
 
@@ -1449,8 +1449,8 @@ $$
   \mathbf{B}_d,\,
   \mathbf{C}_d,\,
   \mathbf{D}_d
-}_{\text{analytical linearisation}}
-+ \underbrace{
+}_{\text{analytical linearisation}} +
+\underbrace{
   \boldsymbol{\Delta}_A,\,
   \boldsymbol{\Delta}_B,\,
   \boldsymbol{\Delta}_C,\,
