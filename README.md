@@ -50,6 +50,7 @@
   - [`data_manager.py`](#data_managerpy)
   - [`system_identification.py`](#system_identificationpy)
   - [`model_reduction.py`](#model_reductionpy)
+  - [`accuracy.py`](#accuracypy)
   - [`estimation.py`](#estimationpy)
   - [`mpc_controller.py`](#mpc_controllerpy)
   - [`simulation.py`](#simulationpy)
@@ -1549,10 +1550,12 @@ The QP is solved using **OSQP** via **CVXPY**.
 
 ```
 blown_film_mpc/
-├── extrusion.csv               # Example real dataset (optional, not required)
-├── requirements.txt            # Python dependencies
-├── LICENSE                     # MIT License
-├── README.md                   # This file
+├── extrusion.csv                    # Example real dataset (optional, not required)
+├── extrusion_data_legend.xlsx       # SCADA tag reference for extrusion.csv
+├── Co_Extrusion_Blown_Film_Line_Dynamics.pdf  # Background reading on the physical process
+├── requirements.txt                 # Python dependencies
+├── LICENSE                          # MIT License
+├── README.md                        # This file
 │
 └── Code/
     ├── main.py                     # Entry point & pipeline orchestrator
@@ -1560,6 +1563,7 @@ blown_film_mpc/
     ├── data_manager.py              # Data loading, preprocessing & splitting
     ├── system_identification.py     # N4SID subspace identification
     ├── model_reduction.py           # Balanced truncation, POD, integrator augmentation
+    ├── accuracy.py                  # Shared accuracy-gate primitives (R² checks, ModelAccuracyError)
     ├── estimation.py                # Kalman filter & state estimation
     ├── mpc_controller.py            # MPC design, QP solver & weight optimisation
     ├── simulation.py                # Closed-loop simulator & model validation
@@ -1567,8 +1571,7 @@ blown_film_mpc/
     ├── utils.py                     # Plotting, reporting & helper utilities
     │
     ├── saved/                       # Cached reduced model & tuned MPC weights (git-ignored)
-    │   ├── reduced_model.pkl
-    │   └── mpc_weights.pkl
+    │   └── reduced_model.pkl
     │
     └── outputs/                     # Auto-generated figures and reports
         ├── singular_values.png
@@ -1644,6 +1647,19 @@ Three-stage reduction pipeline.
 
 **Guaranteed error bound (balanced truncation):**
 ‖G(z) - G_r(z)‖∞ ≤ 2 · Σ{i > r} σ_i
+
+---
+
+### `accuracy.py`
+Shared accuracy-gate primitives used by `main.py` to enforce a minimum
+worst-case per-output R² after identification and again after
+reduction (see [Accuracy Gate](#-accuracy-gate)).
+
+| Class / Function | Responsibility |
+|-------------------|----------------|
+| `AccuracyResult` | Per-output R² result with `worst_output`/`worst_r2`/`passed` properties and a `summary()` string |
+| `ModelAccuracyError` | Raised once order escalation exhausts its configured ceiling without meeting the threshold |
+| `evaluate_accuracy()` | Computes per-output R² and packages it into an `AccuracyResult` |
 
 ---
 
