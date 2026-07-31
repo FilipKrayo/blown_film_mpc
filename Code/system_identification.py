@@ -326,8 +326,9 @@ class ParameterOptimiser:
             self._cfg.optimisation_max_iter,
             n_samples,
         )
-        t0  = time.perf_counter()
-        res = minimize(
+        cost0 = self._cost(theta0, U_opt, Y_opt)
+        t0    = time.perf_counter()
+        res   = minimize(
             self._cost,
             theta0,
             args=(U_opt, Y_opt),
@@ -345,6 +346,21 @@ class ParameterOptimiser:
         )
 
         A, B, C, D = self._unpack(res.x)
+        rho = float(np.max(np.abs(np.linalg.eigvals(A))))
+
+        # Guard against a diverged/unstable result: if the optimiser
+        # failed to improve on the pre-optimisation model, or returned
+        # a non-finite cost, or an unstable A, keep the original N4SID
+        # model instead of propagating garbage/NaN parameters downstream.
+        if not np.isfinite(res.fun) or res.fun > cost0 or rho >= 1.0:
+            logger.warning(
+                "Parameter optimisation did not improve on the initial "
+                "model (cost=%.6g vs initial %.6g, rho=%.4f, success=%s) "
+                "— keeping the pre-optimisation N4SID model.",
+                res.fun, cost0, rho, res.success,
+            )
+            return self._model
+
         return StateSpaceModel(A=A, B=B, C=C, D=D, Ts=self._model.Ts)
 
     # ------------------------------------------------------------------
