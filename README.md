@@ -141,7 +141,7 @@ motivates the state space structure used in the identification and
 MPC pipeline.
 
 The model spans **nine coupled physical domains**, each contributing
-states to the full-order system of dimension $n_x = 146$.
+states to the full-order system of dimension $`n_x = 146`$.
 
 ---
 
@@ -149,62 +149,62 @@ states to the full-order system of dimension $n_x = 146$.
 
 #### 1.1 Melt Flow Rate
 
-The volumetric throughput of extruder $k$ is governed by the
+The volumetric throughput of extruder $`k`$ is governed by the
 classical drag-pressure flow decomposition for a single-screw
 extruder:
 
-$$
+```math
 Q_k = \alpha_k N_k - \beta_k \frac{\Delta P_k}{\mu_k(T_k,\,\dot{\gamma}_k)}
-$$
+```
 
 | Symbol | Description | Unit |
 |--------|-------------|------|
-| $Q_k$ | Volumetric flow rate | m³/s |
-| $\alpha_k$ | Drag flow coefficient (screw geometry) | m³/rev |
-| $N_k$ | Screw rotational speed | rpm |
-| $\beta_k$ | Pressure flow coefficient | m³·s/kg |
-| $\Delta P_k$ | Pressure drop across screw | Pa |
-| $\mu_k$ | Non-Newtonian melt viscosity | Pa·s |
+| $`Q_k`$ | Volumetric flow rate | m³/s |
+| $`\alpha_k`$ | Drag flow coefficient (screw geometry) | m³/rev |
+| $`N_k`$ | Screw rotational speed | rpm |
+| $`\beta_k`$ | Pressure flow coefficient | m³·s/kg |
+| $`\Delta P_k`$ | Pressure drop across screw | Pa |
+| $`\mu_k`$ | Non-Newtonian melt viscosity | Pa·s |
 
 #### 1.2 Non-Newtonian Viscosity
 
 The melt follows a **power-law (Ostwald–de Waele)** model with
 Arrhenius temperature dependence:
 
-$$
+```math
 \mu_k(T_k,\,\dot{\gamma}_k)
 = m_k(T_k)\cdot\dot{\gamma}_k^{\,n_k - 1}
-$$
+```
 
-$$
+```math
 m_k(T_k)
 = m_{0,k}\exp\!\left(\frac{E_{a,k}}{R\,T_k}\right)
-$$
+```
 
 | Symbol | Description | Unit |
 |--------|-------------|------|
-| $\dot{\gamma}_k$ | Shear rate | s⁻¹ |
-| $n_k$ | Power-law index | — |
-| $m_{0,k}$ | Reference consistency index | Pa·sⁿ |
-| $E_{a,k}$ | Flow activation energy | J/mol |
-| $R$ | Universal gas constant | J/(mol·K) |
+| $`\dot{\gamma}_k`$ | Shear rate | s⁻¹ |
+| $`n_k`$ | Power-law index | — |
+| $`m_{0,k}`$ | Reference consistency index | Pa·sⁿ |
+| $`E_{a,k}`$ | Flow activation energy | J/mol |
+| $`R`$ | Universal gas constant | J/(mol·K) |
 
 #### 1.3 Melt Pressure ODE
 
-$$
+```math
 \frac{dP_k}{dt}
 = \frac{K_k}{\rho_k}
 \bigl(\dot{m}_{in,k} - \dot{m}_{out,k}\bigr)
-$$
+```
 
-where $K_k$ is the bulk modulus of the polymer melt.
+where $`K_k`$ is the bulk modulus of the polymer melt.
 
 #### 1.4 Barrel Energy Balance PDE
 
-The temperature field along the screw axis $z$ evolves according
+The temperature field along the screw axis $`z`$ evolves according
 to the **convection–diffusion–reaction** equation:
 
-$$
+```math
 \rho_k c_{p,k}
 \frac{\partial T_k}{\partial t} +
 \rho_k c_{p,k}\,v_{z,k}
@@ -213,34 +213,34 @@ $$
 \frac{\partial^2 T_k}{\partial z^2} +
 \underbrace{\eta_k\,\dot{\gamma}_k^2}_{\text{viscous dissipation}} +
 \underbrace{\dot{q}_{wall,k}(z,t)}_{\text{barrel heating}}
-$$
+```
 
 | Symbol | Description | Unit |
 |--------|-------------|------|
-| $v_{z,k}$ | Axial melt velocity | m/s |
-| $\lambda_k$ | Melt thermal conductivity | W/(m·K) |
-| $\eta_k\dot{\gamma}_k^2$ | Viscous dissipation (→ `DissipationPwr`) | W/m³ |
-| $\dot{q}_{wall,k}$ | Wall heat flux from barrel zones | W/m³ |
+| $`v_{z,k}`$ | Axial melt velocity | m/s |
+| $`\lambda_k`$ | Melt thermal conductivity | W/(m·K) |
+| $`\eta_k\dot{\gamma}_k^2`$ | Viscous dissipation (→ `DissipationPwr`) | W/m³ |
+| $`\dot{q}_{wall,k}`$ | Wall heat flux from barrel zones | W/m³ |
 
 #### 1.5 Barrel Zone Heat Flux
 
-Each of the $j = 1,\ldots,8$ heating zones contributes:
+Each of the $`j = 1,\ldots,8`$ heating zones contributes:
 
-$$
+```math
 \dot{q}_{wall,k,j}
 = h_{k,j}\,A_{k,j}
 \bigl(T_{sp,k,j} - T_k(z_j,t)\bigr)
 \cdot P_{eff,k,j}(t)
-$$
+```
 
-$$
+```math
 \frac{dT_{set,k,j}}{dt}
 = \frac{1}{\tau_{k,j}}
 \bigl(T_{sp,k,j} - T_{set,k,j}\bigr) -
 K_{P,k,j}\,e_{k,j}(t)
-$$
+```
 
-where $e_{k,j} = T_{set,k,j} - T_{act,k,j}$ is the zone PID
+where $`e_{k,j} = T_{set,k,j} - T_{act,k,j}`$ is the zone PID
 error signal (mapped from SCADA tags `Regler_X`, `Regler_Y`,
 `ActEffectPower`).
 
@@ -248,47 +248,47 @@ error signal (mapped from SCADA tags `Regler_X`, `Regler_Y`,
 
 ### 2. Dosing / Feeder Dynamics
 
-For component $i$ in extruder $k$ (up to 5 components per
+For component $`i`$ in extruder $`k`$ (up to 5 components per
 extruder, mapped from `Dos_2` through `Dos_5`):
 
 #### 2.1 Component Mass Balance
 
-$$
+```math
 \frac{dm_{i,k}}{dt}
 = \dot{m}_{feed,i,k} -
 \rho_{bulk,i,k}\,Q_{dos,i,k}(N_{dos,i,k})
-$$
+```
 
 #### 2.2 Actual Proportion
 
-$$
+```math
 \phi_{i,k}(t)
 = \frac{\dot{m}_{out,i,k}}
        {\displaystyle\sum_{i=1}^{n}\dot{m}_{out,i,k}}
-\quad\longrightarrow\quad
-\texttt{Dos\_i\_IstAnteil}
-$$
+```
+
+→ `Dos_i_IstAnteil`
 
 #### 2.3 PI Dosing Control Law
 
-$$
+```math
 \frac{dN_{dos,i,k}}{dt}
 = K_{c,i,k}
 \bigl(\phi_{i,k}^{set} - \phi_{i,k}\bigr) +
 \frac{K_{c,i,k}}{\tau_{I,i,k}}
 \int_0^t
 \bigl(\phi_{i,k}^{set} - \phi_{i,k}\bigr)\,d\tau
-$$
+```
 
 #### 2.4 Mix Density
 
-$$
+```math
 \rho_{mix,k}(t)
 = \sum_{i=1}^{n}
 \phi_{i,k}(t)\cdot\rho_{bulk,i,k}
-\quad\longrightarrow\quad
-\texttt{MischDicht}
-$$
+```
+
+→ `MischDicht`
 
 ---
 
@@ -297,9 +297,9 @@ $$
 #### 3.1 Die Zone Temperature PDE
 
 The annular die body is modelled in cylindrical coordinates
-$(r, z)$:
+$`(r, z)`$:
 
-$$
+```math
 \rho_{die}\,c_{p,die}
 \frac{\partial T_{die}}{\partial t}
 = \lambda_{die}
@@ -310,39 +310,39 @@ $$
   \frac{\partial^2 T_{die}}{\partial z^2}
 \right) +
 \dot{q}_{heater}(r,z,t)
-$$
+```
 
-Zones $j = 3,\ldots,9$ are monitored via
+Zones $`j = 3,\ldots,9`$ are monitored via
 `HeizungZone_j_SollTemp`, `HeizungZone_j_Regler_Y`.
 
 #### 3.2 Zone Heater Power Control
 
-$$
+```math
 P_{eff,j}(t)
 = \frac{P_{eff,j}^{max}}{100}\cdot u_j(t),
 \qquad u_j \in [0,100]\,\%
-$$
+```
 
-$$
+```math
 \frac{du_j}{dt}
 = K_{P,j}\frac{de_j}{dt} +
 \frac{K_{P,j}}{\tau_{I,j}}\,e_j(t),
 \qquad
 e_j = T_{sp,j} - T_{act,j}
-$$
+```
 
 #### 3.3 Annular Melt Flow (Stokes)
 
-$$
+```math
 \frac{\partial v_z}{\partial t}
 = -\frac{1}{\rho}\frac{\partial P}{\partial z} +
 \frac{1}{r}\frac{\partial}{\partial r}
 \!\left(r\,\mu\frac{\partial v_z}{\partial r}\right)
-$$
+```
 
 with no-slip boundary conditions:
-$v_z(R_{inner},t) = 0$,
-$v_z(R_{outer},t) = 0$.
+$`v_z(R_{inner},t) = 0`$,
+$`v_z(R_{outer},t) = 0`$.
 
 ---
 
@@ -353,57 +353,57 @@ subsystem, requiring a **moving-boundary** formulation.
 
 #### 4.1 Bubble Radius PDE
 
-$$
+```math
 \frac{\partial R}{\partial t} +
 v_z\frac{\partial R}{\partial z}
 = \frac{R}{2}
 \bigl(\dot{\varepsilon}_\theta - \dot{\varepsilon}_z\bigr)
-$$
+```
 
 #### 4.2 Film Thickness Evolution PDE
 
-$$
+```math
 \frac{\partial h}{\partial t} +
 v_z\frac{\partial h}{\partial z}
 = -h
 \bigl(\dot{\varepsilon}_z + \dot{\varepsilon}_\theta\bigr)
-$$
+```
 
 | Symbol | Description | SCADA Tag |
 |--------|-------------|-----------|
-| $h(z,t)$ | Local film thickness | `SDickeIst` |
-| $\dot{\varepsilon}_z$ | Axial strain rate | — |
-| $\dot{\varepsilon}_\theta$ | Hoop strain rate | — |
+| $`h(z,t)`$ | Local film thickness | `SDickeIst` |
+| $`\dot{\varepsilon}_z`$ | Axial strain rate | — |
+| $`\dot{\varepsilon}_\theta`$ | Hoop strain rate | — |
 
 #### 4.3 Axial Force Balance
 
-$$
+```math
 F_z = 2\pi R\,h\,\sigma_{zz} + \pi R^2\,\Delta P_{bubble}
-$$
+```
 
-$$
+```math
 \frac{dF_z}{dz} = 0
 \qquad\text{(quasi-steady axial tension)}
-$$
+```
 
 #### 4.4 Bubble Pressure ODE (IBC Control)
 
 The internal bubble pressure is governed by the net mass flow
-through the three IBC units ($l = 1,2,3$):
+through the three IBC units ($`l = 1,2,3`$):
 
-$$
+```math
 \frac{dP_{bubble}}{dt}
 = \frac{\gamma_{air}}{V_{bubble}}
 \bigl(\dot{m}_{in,IBC} - \dot{m}_{out,IBC}\bigr)
 \frac{R_{gas}\,T_{air}}{M_{air}}
-$$
+```
 
-$$
+```math
 \dot{m}_{in,IBC,l}
 = f\!\bigl(N_{IBC,l},\,P_{bubble}\bigr)
-\quad\longrightarrow\quad
-\texttt{VARIBC\_l\_Ist\_n\_Calc}
-$$
+```
+
+→ `VARIBC_l_Ist_n_Calc`
 
 ---
 
@@ -414,47 +414,43 @@ $$
 The thin-film energy balance couples external air cooling and
 internal IBC cooling:
 
-$$
+```math
 \rho_f\,c_{p,f}\,h
 \frac{\partial T_f}{\partial t}
 = -h_{conv,ext}(T_f - T_{air,ext}) -
 h_{conv,int}(T_f - T_{IBC}) +
 \dot{q}_{rad}
-$$
+```
 
-#### 5.2 IBC Air Temperature ODE (unit $l$)
+#### 5.2 IBC Air Temperature ODE (unit $`l`$)
 
-$$
+```math
 \rho_{air}\,V_{IBC,l}\,c_{p,air}
 \frac{dT_{IBC,l}}{dt}
 = \dot{m}_{in,l}\,c_{p,air}(T_{in,l} - T_{IBC,l}) -
 UA_l(T_{IBC,l} - T_{film})
-$$
+```
 
-$$
-\texttt{KuehlGeraet\_l\_IstTemp}
-\;\longleftrightarrow\;
-T_{IBC,l}
-$$
+`KuehlGeraet_l_IstTemp` ↔ $`T_{IBC,l}`$
 
 #### 5.3 IBC Speed Control ODE
 
-$$
+```math
 \frac{dN_{IBC,l}}{dt}
 = \frac{1}{\tau_{IBC}}
 \bigl(N_{IBC,l}^{set} - N_{IBC,l}\bigr)
-\quad\longrightarrow\quad
-\texttt{VARIBC\_l\_Soll\_n\_Visu}
-$$
+```
+
+→ `VARIBC_l_Soll_n_Visu`
 
 #### 5.4 Cooling Device Temperature ODE
 
-$$
+```math
 M_{cool,l}\,c_{p,cool}
 \frac{dT_{cool,l}}{dt}
 = \dot{Q}_{in,l} -
 UA_{cool,l}(T_{cool,l} - T_{amb})
-$$
+```
 
 ---
 
@@ -462,7 +458,7 @@ $$
 
 #### 6.1 Haul-Off Speed ODE
 
-$$
+```math
 \frac{dv_{haul}}{dt}
 = \frac{1}{J_{haul}}
 \bigl[
@@ -470,89 +466,81 @@ $$
   \sigma_{haul}\,h_{film}\,W_{film} -
   F_{fric}
 \bigr]
-$$
+```
 
-$$
-\texttt{VARAbzug\_1\_IstZu}
-\;\longleftrightarrow\;
-v_{haul}
-$$
+`VARAbzug_1_IstZu` ↔ $`v_{haul}`$
 
 #### 6.2 Film Tension ODE
 
-$$
+```math
 \frac{d\sigma_{haul}}{dt}
 = \frac{E_f\,h_{film}\,W_{film}}{L_{haul}}
 \bigl(v_{haul} - v_{bubble,FLH}\bigr)
-$$
+```
 
 | Symbol | Description | Unit |
 |--------|-------------|------|
-| $E_f$ | Film elastic modulus | Pa |
-| $W_{film}$ | Lay-flat film width | m |
-| $L_{haul}$ | Distance from frost line to nip | m |
-| $v_{bubble,FLH}$ | Film velocity at frost line height | m/s |
+| $`E_f`$ | Film elastic modulus | Pa |
+| $`W_{film}`$ | Lay-flat film width | m |
+| $`L_{haul}`$ | Distance from frost line to nip | m |
+| $`v_{bubble,FLH}`$ | Film velocity at frost line height | m/s |
 
 ---
 
 ### 7. Winder Dynamics
 
-For winders $w = 1$ (`ST113`) and $w = 2$ (`ST114`):
+For winders $`w = 1`$ (`ST113`) and $`w = 2`$ (`ST114`):
 
 #### 7.1 Roll Build-Up ODE
 
-$$
+```math
 \frac{dR_{roll,w}}{dt}
 = \frac{h_{film}\,v_{haul}}
        {2\pi\,R_{roll,w}\,\eta_{pack}}
-\quad\longrightarrow\quad
-\texttt{VARDiaRollRc}
-$$
+```
+
+→ `VARDiaRollRc`
 
 #### 7.2 Accumulated Length ODE
 
-$$
+```math
 \frac{dL_w}{dt} = v_{haul}(t),
 \qquad
 L_{rem,w}(t) = L_{target,w} - L_w(t)
-$$
+```
 
-$$
-\texttt{VARActLen},\;\texttt{VARRemainingLen}
-\;\longleftrightarrow\;
-L_w,\;L_{rem,w}
-$$
+`VARActLen`, `VARRemainingLen` ↔ $`L_w`$, $`L_{rem,w}`$
 
 #### 7.3 Winder Drum Dynamics
 
-$$
+```math
 J_w\frac{d\omega_{drum,w}}{dt}
 = T_{drive,w} -
 \sigma_{web,w}\,h_{film}\,W_{film}\,R_{roll,w} -
 B_w\,\omega_{drum,w}
-$$
+```
 
-$$
+```math
 \dot{R}_{roll,w}
 = \frac{h_{film}\,v_{haul}}{2\pi\,R_{roll,w}}
-$$
+```
 
 #### 7.4 Web Tension ODE
 
-$$
+```math
 \frac{d\sigma_{web,w}}{dt}
 = \frac{E_f\,h_{film}\,W_{film}}{L_{span,w}}
 \bigl(\omega_{drum,w}\,R_{roll,w} - v_{haul}\bigr)
-\quad\longrightarrow\quad
-\texttt{VARWdSpTens}
-$$
+```
+
+→ `VARWdSpTens`
 
 #### 7.5 Tension Taper (Clp Curve)
 
 The tension setpoint is tapered as the roll builds up to prevent
 telescoping:
 
-$$
+```math
 \sigma_{web,w}^{set}(R)
 = \sigma_{0,w}
 \left(
@@ -560,9 +548,9 @@ $$
   \frac{R_{roll,w} - R_{core,w}}
        {R_{max,w} - R_{core,w}}
 \right)
-$$
+```
 
-where $\kappa_w$ is the taper factor
+where $`\kappa_w`$ is the taper factor
 (→ `VARClpTens`, `VARWdTapeReductVal`).
 
 ---
@@ -571,69 +559,65 @@ where $\kappa_w$ is the taper factor
 
 #### 8.1 Total Mass Flow Rate
 
-$$
+```math
 \dot{m}_{total}(t)
 = \sum_{k=0}^{K-1}
 \rho_{mix,k}(t)\cdot Q_k(t)
-\quad\longrightarrow\quad
-\texttt{VAREx\_k\_GesamtDS}
-$$
+```
+
+→ `VAREx_k_GesamtDS`
 
 #### 8.2 Individual Layer Thickness Fraction
 
-$$
+```math
 \delta_k(t)
 = \frac{Q_k(t)}{\displaystyle\sum_j Q_j(t)}
 \cdot h_{total}(t)
-\quad\longrightarrow\quad
-\texttt{VAREx\_k\_SDickeProz}
-$$
+```
+
+→ `VAREx_k_SDickeProz`
 
 #### 8.3 Global Film Thickness (Mass Balance)
 
-$$
+```math
 h_{total}(z,t)
 = \frac{\dot{m}_{total}}
        {2\pi\,R(z,t)\cdot\rho_{mix}\cdot v_z(z,t)}
-\quad\longrightarrow\quad
-\texttt{VAREx\_k\_SDickeIst}
-$$
+```
+
+→ `VAREx_k_SDickeIst`
 
 ---
 
 ### 9. Production Management
 
-$$
+```math
 \frac{dL_{job}}{dt} = v_{haul}(t)
-$$
+```
 
-$$
+```math
 \frac{dm_{job}}{dt}
 = \rho_{film}\cdot h_{total}\cdot W_{film}\cdot v_{haul}(t)
-$$
+```
 
-$$
-\texttt{VAREx\_0\_Dos\_0\_IstLMGewicht}
-\;\longleftrightarrow\;
-m_{job}
-$$
+`VAREx_0_Dos_0_IstLMGewicht` ↔ $`m_{job}`$
 
 ---
 
 ### 10. Full-Order State Vector
 
 The complete first-principles model has state dimension
-$n_x = 146$, partitioned as:
+$`n_x = 146`$, partitioned as:
 
 | Subsystem | States | Dimension |
 |-----------|--------|-----------|
-| Extruder barrel temperatures ($T_{k,j}$, 4 extruders × 8 zones) | $T_{k,j}$, $P_k$, $\dot{m}_{out,k}$, $T_{melt,k}$ | 44 |
-| Dosing (4 extruders × 5 components) | $\phi_{i,k}$, $N_{dos,i,k}$, $m_{i,k}$ | 60 |
-| Die head (7 zones, temp + actuator) | $T_{die,j}$, $u_{die,j}$ | 14 |
-| Bubble | $R_{bub}$, $h_{film}$, $P_{bub}$, $v_z$, $T_f$, $\sigma_{zz}$ | 6 |
-| Cooling (3 IBC + 3 devices) | $T_{IBC,l}$, $N_{IBC,l}$, $T_{cool,l}$ | 9 |
-| Haul-off | $v_{haul}$, $\sigma_{haul}$, $L_{job}$ | 3 |
-| Winders 1 & 2 | $\omega_{drum,w}$, $R_{roll,w}$, $L_w$, $\sigma_{web,w}$, $T_{drive,w}$ | 10 |
+| Extruder barrel temperatures ($`T_{k,j}`$, 4 extruders × 8 zones) | $`T_{k,j}`$, $`P_k`$, $`\dot{m}_{out,k}`$, $`T_{melt,k}`$ | 44 |
+| Dosing (4 extruders × 5 components) | $`\phi_{i,k}`$, $`N_{dos,i,k}`$, $`m_{i,k}`$ | 60 |
+| Die head (7 zones, temp + actuator) | $`T_{die,j}`$, $`u_{die,j}`$ | 14 |
+| Bubble | $`R_{bub}`$, $`h_{film}`$, $`P_{bub}`$, $`v_z`$, $`T_f`$, $`\sigma_{zz}`$ | 6 |
+| Cooling (3 IBC + 3 devices) | $`T_{IBC,l}`$, $`N_{IBC,l}`$, $`T_{cool,l}`$ | 9 |
+| Haul-off | $`v_{haul}`$, $`\sigma_{haul}`$, $`L_{job}`$ | 3 |
+| Winders 1 & 2 | $`\omega_{drum,w}`$, $`R_{roll,w}`$, $`L_w`$, $`\sigma_{web,w}`$, $`T_{drive,w}`$ | 10 |
 | **Total** | | **146** |
 
 ---
@@ -642,20 +626,20 @@ $n_x = 146$, partitioned as:
 
 The full nonlinear system can be written compactly as:
 
-$$
+```math
 \dot{\mathbf{x}}(t)
 = \mathbf{f}\!\bigl(\mathbf{x}(t),\,\mathbf{u}(t)\bigr),
 \qquad
 \mathbf{x} \in \mathbb{R}^{146},\;
 \mathbf{u} \in \mathbb{R}^{96}
-$$
+```
 
-$$
+```math
 \mathbf{y}(t)
 = \mathbf{g}\!\bigl(\mathbf{x}(t),\,\mathbf{u}(t)\bigr),
 \qquad
 \mathbf{y} \in \mathbb{R}^{58}
-$$
+```
 
 The key coupling structure is:
 
@@ -691,19 +675,19 @@ because:
 | Challenge | Detail |
 |-----------|--------|
 | **Nonlinearity** | Power-law viscosity, bubble free-surface, strain-rate coupling |
-| **Unknown parameters** | $E_{a,k}$, $n_k$, $m_{0,k}$, $h_{conv}$, $UA_l$ vary with material grade |
-| **Moving boundary** | Bubble radius $R(z,t)$ requires mesh adaptation |
+| **Unknown parameters** | $`E_{a,k}`$, $`n_k`$, $`m_{0,k}`$, $`h_{conv}`$, $`UA_l`$ vary with material grade |
+| **Moving boundary** | Bubble radius $`R(z,t)`$ requires mesh adaptation |
 | **Stiffness** | Time constants span 0.1 s (drives) to 1800 s (roll build-up) |
 | **Distributed parameters** | PDEs require spatial discretisation → very high state dimension |
 
 Instead, the PDE model **motivates the state space structure** and
 **informs signal selection** (which tags are inputs vs outputs),
-while the actual model matrices $(A, B, C, D)$ are identified
+while the actual model matrices $`(A, B, C, D)`$ are identified
 from SCADA data using the **N4SID subspace algorithm** described
 in the [`system_identification.py`](#system_identificationpy) section.
 
-The reduction from $n_x = 146$ (first-principles) to
-$\tilde{n} \approx 22$ (MPC-ready) is achieved through the
+The reduction from $`n_x = 146`$ (first-principles) to
+$`\tilde{n} \approx 22`$ (MPC-ready) is achieved through the
 **model order reduction pipeline**:
 
 ```
@@ -743,7 +727,7 @@ and proceeds through five formal stages:
 2. Operating point definition
 3. Jacobian linearisation
 4. Time-scale separation (singular perturbation)
-5. Assembly of the linearised $(A, B, C, D)$ matrices
+5. Assembly of the linearised $`(A, B, C, D)`$ matrices
 
 ---
 
@@ -755,11 +739,11 @@ system must be reduced to a finite-dimensional ODE system via
 
 #### 1.1 Extruder Barrel — Finite Difference (Method of Lines)
 
-The axial temperature PDE along screw direction $z \in [0, L_k]$
-is discretised into $N_z$ equally spaced nodes
-$z_j = j\,\Delta z$, $\Delta z = L_k / N_z$:
+The axial temperature PDE along screw direction $`z \in [0, L_k]`$
+is discretised into $`N_z`$ equally spaced nodes
+$`z_j = j\,\Delta z`$, $`\Delta z = L_k / N_z`$:
 
-$$
+```math
 \rho_k c_{p,k}
 \frac{dT_{k,j}}{dt}
 = \frac{\lambda_k}{\Delta z^2}
@@ -768,12 +752,12 @@ $$
 \bigl(T_{k,j} - T_{k,j-1}\bigr) +
 \eta_k\dot{\gamma}_k^2 +
 \dot{q}_{wall,k,j}
-$$
+```
 
-This converts the extruder PDE into a system of $N_z$ coupled ODEs
+This converts the extruder PDE into a system of $`N_z`$ coupled ODEs
 per extruder, which in matrix form reads:
 
-$$
+```math
 \frac{d\mathbf{T}_k}{dt}
 = \underbrace{
     \frac{\lambda_k}{\rho_k c_{p,k} \Delta z^2}\mathbf{D}_2 -
@@ -782,61 +766,61 @@ $$
 \mathbf{T}_k +
 \mathbf{f}_{visc,k} +
 \mathbf{B}_{wall,k}\mathbf{u}_{zone,k}
-$$
+```
 
 where:
-- $\mathbf{D}_2 \in \mathbb{R}^{N_z \times N_z}$ is the
+- $`\mathbf{D}_2 \in \mathbb{R}^{N_z \times N_z}`$ is the
   second-order finite difference matrix (tridiagonal)
-- $\mathbf{D}_1 \in \mathbb{R}^{N_z \times N_z}$ is the
+- $`\mathbf{D}_1 \in \mathbb{R}^{N_z \times N_z}`$ is the
   first-order upwind difference matrix
-- $\mathbf{f}_{visc,k}$ is the viscous dissipation vector
-- $\mathbf{B}_{wall,k}$ maps zone setpoints to nodal heat fluxes
+- $`\mathbf{f}_{visc,k}`$ is the viscous dissipation vector
+- $`\mathbf{B}_{wall,k}`$ maps zone setpoints to nodal heat fluxes
 
 #### 1.2 Die Head — Finite Element (Radial Direction)
 
-The 2D die PDE in $(r, z)$ is discretised using
-**linear finite elements** in $r$ and finite differences in $z$.
+The 2D die PDE in $`(r, z)`$ is discretised using
+**linear finite elements** in $`r`$ and finite differences in $`z`$.
 The resulting ODE system is:
 
-$$
+```math
 \mathbf{M}_{die}
 \frac{d\mathbf{T}_{die}}{dt}
 = \mathbf{K}_{die}\mathbf{T}_{die} +
 \mathbf{F}_{die}(\mathbf{u}_{die})
-$$
+```
 
-where $\mathbf{M}_{die}$ is the FE mass matrix,
-$\mathbf{K}_{die}$ is the stiffness matrix, and
-$\mathbf{F}_{die}$ is the load vector from heater inputs.
+where $`\mathbf{M}_{die}`$ is the FE mass matrix,
+$`\mathbf{K}_{die}`$ is the stiffness matrix, and
+$`\mathbf{F}_{die}`$ is the load vector from heater inputs.
 
 #### 1.3 Bubble — Galerkin Spectral Discretisation
 
 The bubble radius and film thickness PDEs are projected onto
-$N_{bub}$ spectral basis functions $\psi_n(z)$:
+$`N_{bub}`$ spectral basis functions $`\psi_n(z)`$:
 
-$$
+```math
 R(z,t) \approx \sum_{n=1}^{N_{bub}} r_n(t)\,\psi_n(z),
 \qquad
 h(z,t) \approx \sum_{n=1}^{N_{bub}} h_n(t)\,\psi_n(z)
-$$
+```
 
 yielding the Galerkin ODE system:
 
-$$
+```math
 \frac{d\mathbf{r}}{dt}
 = \mathbf{G}_{bub}(\mathbf{r}, \mathbf{h}, P_{bub}, v_z)
-$$
+```
 
-$$
+```math
 \frac{d\mathbf{h}_{bub}}{dt}
 = \mathbf{H}_{bub}(\mathbf{r}, \mathbf{h}, \dot{\varepsilon}_z,
   \dot{\varepsilon}_\theta)
-$$
+```
 
 After discretisation, the **full nonlinear ODE system** takes the
 compact form:
 
-$$
+```math
 \boxed{
 \dot{\mathbf{x}}(t)
 = \mathbf{f}\!\bigl(\mathbf{x}(t),\,\mathbf{u}(t)\bigr),
@@ -844,23 +828,23 @@ $$
 \mathbf{x} \in \mathbb{R}^{146},\;
 \mathbf{u} \in \mathbb{R}^{96}
 }
-$$
+```
 
 ---
 
 ### 2. Operating Point Definition
 
 The linearisation is performed around a **steady-state nominal
-operating point** $(\mathbf{x}_0, \mathbf{u}_0)$ satisfying:
+operating point** $`(\mathbf{x}_0, \mathbf{u}_0)`$ satisfying:
 
-$$
+```math
 \mathbf{f}(\mathbf{x}_0,\,\mathbf{u}_0) = \mathbf{0}
-$$
+```
 
 This is found by solving the nonlinear algebraic system using
 Newton–Raphson iteration:
 
-$$
+```math
 \mathbf{x}_0^{(i+1)}
 = \mathbf{x}_0^{(i)} -
 \left[
@@ -868,7 +852,7 @@ $$
     \bigg|_{\mathbf{x}_0^{(i)},\,\mathbf{u}_0}
   \right]^{-1}
 \mathbf{f}\!\bigl(\mathbf{x}_0^{(i)},\,\mathbf{u}_0\bigr)
-$$
+```
 
 The nominal operating point corresponds to a **typical production
 recipe** with the following key values:
@@ -885,13 +869,13 @@ recipe** with the following key values:
 
 The **perturbation variables** are defined as:
 
-$$
+```math
 \tilde{\mathbf{x}}(t) = \mathbf{x}(t) - \mathbf{x}_0,
 \qquad
 \tilde{\mathbf{u}}(t) = \mathbf{u}(t) - \mathbf{u}_0,
 \qquad
 \tilde{\mathbf{y}}(t) = \mathbf{y}(t) - \mathbf{y}_0
-$$
+```
 
 ---
 
@@ -899,10 +883,10 @@ $$
 
 #### 3.1 General Procedure
 
-Expanding $\mathbf{f}$ in a first-order Taylor series about
-$(\mathbf{x}_0, \mathbf{u}_0)$:
+Expanding $`\mathbf{f}`$ in a first-order Taylor series about
+$`(\mathbf{x}_0, \mathbf{u}_0)`$:
 
-$$
+```math
 \dot{\tilde{\mathbf{x}}}
 = \underbrace{
     \frac{\partial \mathbf{f}}{\partial \mathbf{x}}
@@ -918,9 +902,9 @@ $$
     \mathcal{O}\!\left(\|\tilde{\mathbf{x}}\|^2,
     \|\tilde{\mathbf{u}}\|^2\right)
   }_{\text{neglected}}
-$$
+```
 
-$$
+```math
 \tilde{\mathbf{y}}
 = \underbrace{
     \frac{\partial \mathbf{g}}{\partial \mathbf{x}}
@@ -932,14 +916,14 @@ $$
     \bigg|_{\mathbf{x}_0,\,\mathbf{u}_0}
   }_{\mathbf{D}_c}
 \tilde{\mathbf{u}}
-$$
+```
 
 #### 3.2 Analytical Jacobian Blocks
 
-The Jacobian $\mathbf{A}_c$ has a **sparse block structure**
+The Jacobian $`\mathbf{A}_c`$ has a **sparse block structure**
 reflecting the physical coupling between subsystems:
 
-$$
+```math
 \mathbf{A}_c =
 \begin{bmatrix}
 \mathbf{A}_{ee} & \mathbf{0}      & \mathbf{0}        & \mathbf{0}      & \mathbf{0}      & \mathbf{0}      & \mathbf{0}      \\
@@ -951,56 +935,56 @@ $$
 \mathbf{0}      & \mathbf{0}      & \mathbf{0}        & \mathbf{0}      & \mathbf{0}      & \mathbf{A}_{wh} & \mathbf{A}_{ww}
 \end{bmatrix}
 \in \mathbb{R}^{146 \times 146}
-$$
+```
 
 where the subscripts denote:
-$e$ = extruder, $d$ = dosing, $\partial$ = die,
-$b$ = bubble, $c$ = cooling, $h$ = haul-off, $w$ = winder.
+$`e`$ = extruder, $`d`$ = dosing, $`\partial`$ = die,
+$`b`$ = bubble, $`c`$ = cooling, $`h`$ = haul-off, $`w`$ = winder.
 
 The key **off-diagonal coupling blocks** are:
 
 | Block | Physical Meaning |
 |-------|-----------------|
-| $\mathbf{A}_{de}$ | Dosing proportions affect extruder melt density |
-| $\mathbf{A}_{\partial e}$ | Extruder melt temperature drives die inlet BC |
-| $\mathbf{A}_{b\partial}$ | Die pressure drives bubble inflation |
-| $\mathbf{A}_{be}$ | Extruder throughput sets bubble mass flow |
-| $\mathbf{A}_{cb}$ | Bubble temperature couples to IBC cooling |
-| $\mathbf{A}_{hb}$ | Bubble exit velocity drives haul-off tension |
-| $\mathbf{A}_{hc}$ | Cooling affects film stiffness at haul-off |
-| $\mathbf{A}_{wh}$ | Haul-off speed drives winder drum speed |
+| $`\mathbf{A}_{de}`$ | Dosing proportions affect extruder melt density |
+| $`\mathbf{A}_{\partial e}`$ | Extruder melt temperature drives die inlet BC |
+| $`\mathbf{A}_{b\partial}`$ | Die pressure drives bubble inflation |
+| $`\mathbf{A}_{be}`$ | Extruder throughput sets bubble mass flow |
+| $`\mathbf{A}_{cb}`$ | Bubble temperature couples to IBC cooling |
+| $`\mathbf{A}_{hb}`$ | Bubble exit velocity drives haul-off tension |
+| $`\mathbf{A}_{hc}`$ | Cooling affects film stiffness at haul-off |
+| $`\mathbf{A}_{wh}`$ | Haul-off speed drives winder drum speed |
 
 #### 3.3 Extruder Jacobian Block
 
 For the discretised barrel temperature states
-$\tilde{T}_{k,j}$, the diagonal block is:
+$`\tilde{T}_{k,j}`$, the diagonal block is:
 
-$$
+```math
 [\mathbf{A}_{ee}]_{k,j,j}
 = -\frac{h_{k,j}A_{k,j}P_{eff,k,j}^0
          + \dot{m}_{out,k}^0 c_{p,k}}
         {\rho_k c_{p,k} V_{k,j}} -
 \frac{v_{z,k}}{\Delta z} -
 \frac{2\lambda_k}{\rho_k c_{p,k} \Delta z^2}
-$$
+```
 
 The super- and sub-diagonal entries (axial coupling):
 
-$$
+```math
 [\mathbf{A}_{ee}]_{k,j,j+1}
 = \frac{\lambda_k}{\rho_k c_{p,k} \Delta z^2}
-$$
+```
 
-$$
+```math
 [\mathbf{A}_{ee}]_{k,j,j-1}
 = \frac{\lambda_k}{\rho_k c_{p,k} \Delta z^2} +
 \frac{v_{z,k}}{\Delta z}
-$$
+```
 
 The viscosity nonlinearity contributes an additional term via
 the chain rule:
 
-$$
+```math
 \frac{\partial f_{T_k}}{\partial T_k}
 \bigg|_{\text{visc}}
 = \frac{\partial}{\partial T_k}
@@ -1010,7 +994,7 @@ $$
 \cdot m_{0,k}\,\dot{\gamma}_k^{n_k-1}
 \cdot\left(-\frac{E_{a,k}}{R\,T_{k,0}^2}\right)
 e^{E_{a,k}/(R T_{k,0})}
-$$
+```
 
 #### 3.4 Bubble Jacobian Block
 
@@ -1018,36 +1002,36 @@ The bubble subsystem has the most complex Jacobian due to the
 nonlinear strain-rate coupling. Linearising the thickness
 evolution:
 
-$$
+```math
 \frac{\partial \dot{h}}{\partial h}
 \bigg|_0
 = -\bigl(\dot{\varepsilon}_{z,0} + \dot{\varepsilon}_{\theta,0}\bigr)
-$$
+```
 
-$$
+```math
 \frac{\partial \dot{h}}{\partial v_z}
 \bigg|_0
 = -\frac{\partial h}{\partial z}\bigg|_0
-$$
+```
 
-$$
+```math
 \frac{\partial \dot{R}}{\partial R}
 \bigg|_0
 = \frac{1}{2}
 \bigl(\dot{\varepsilon}_{\theta,0} - \dot{\varepsilon}_{z,0}\bigr)
-$$
+```
 
 The stress relaxation linearisation:
 
-$$
+```math
 \frac{\partial \dot{\sigma}_{zz}}{\partial \sigma_{zz}}
 \bigg|_0
 = -\frac{1}{\tau_{relax}}
-$$
+```
 
 The full bubble block in linearised form:
 
-$$
+```math
 \mathbf{A}_{bb}
 =
 \begin{bmatrix}
@@ -1058,31 +1042,31 @@ $$
   0        & a_{Th}   & 0        & 0        & a_{TT}   & 0        \\
   0        & 0        & 0        & a_{\sigma v} & 0   & a_{\sigma\sigma}
 \end{bmatrix}
-$$
+```
 
 where:
 
-$$
+```math
 a_{RR} = \tfrac{1}{2}(\dot{\varepsilon}_{\theta,0}
          - \dot{\varepsilon}_{z,0}), \quad
 a_{hh} = -(\dot{\varepsilon}_{z,0}
          + \dot{\varepsilon}_{\theta,0}), \quad
 a_{PP} = -\frac{\gamma_{air} R_{gas} T_{air}}
                {M_{air} V_{bub,0}^2}\dot{m}_{net,0}
-$$
+```
 
-$$
+```math
 a_{TT} = -\frac{h_{ext} + h_{int}}
                {\rho_f c_{p,f} h_{film,0}}, \quad
 a_{\sigma\sigma} = -\frac{1}{\tau_{relax}}, \quad
 a_{v\sigma} = \frac{1}{\rho_f h_{film,0}}
-$$
+```
 
 #### 3.5 Winder Jacobian Block
 
-For winder $w$, the $5 \times 5$ diagonal block is:
+For winder $`w`$, the $`5 \times 5`$ diagonal block is:
 
-$$
+```math
 \mathbf{A}_{ww,w}
 =
 \begin{bmatrix}
@@ -1112,48 +1096,48 @@ $$
   & 0
   & -1/\tau_{drive,w}
 \end{bmatrix}
-$$
+```
 
-#### 3.6 Input Jacobian $\mathbf{B}_c$
+#### 3.6 Input Jacobian $`\mathbf{B}_c`$
 
 The input matrix maps manipulated variables to state derivatives.
 The non-zero blocks are:
 
 **Extruder zone setpoints** → barrel temperatures:
 
-$$
+```math
 [\mathbf{B}_c]_{T_{k,j},\,T_{sp,k,j}}
 = \frac{h_{k,j}\,A_{k,j}\,P_{eff,k,j}^0}
        {\rho_k\,c_{p,k}\,V_{k,j}}
-$$
+```
 
 **IBC speed setpoints** → IBC speed states:
 
-$$
+```math
 [\mathbf{B}_c]_{N_{IBC,l},\,N_{IBC,l}^{set}}
 = \frac{1}{\tau_{IBC}}
-$$
+```
 
 **Haul-off speed setpoint** → haul-off velocity:
 
-$$
+```math
 [\mathbf{B}_c]_{v_{haul},\,v_{haul}^{set}}
 = \frac{K_v}{J_{haul}}
-$$
+```
 
 **Winder torque setpoint** → drum angular velocity:
 
-$$
+```math
 [\mathbf{B}_c]_{\omega_{drum,w},\,T_{drive,w}^{set}}
 = \frac{1}{J_w\,\tau_{drive,w}}
-$$
+```
 
-#### 3.7 Output Jacobian $\mathbf{C}_c$
+#### 3.7 Output Jacobian $`\mathbf{C}_c`$
 
-Since most outputs are **direct state measurements**, $\mathbf{C}_c$
+Since most outputs are **direct state measurements**, $`\mathbf{C}_c`$
 is a **sparse selection matrix**:
 
-$$
+```math
 \mathbf{C}_c
 =
 \begin{bmatrix}
@@ -1168,27 +1152,27 @@ $$
   \mathbf{e}_{L_{rem,w}}^\top
 \end{bmatrix}
 \in \mathbb{R}^{58 \times 146}
-$$
+```
 
-where $\mathbf{e}_i$ denotes the unit selection vector for
-state $i$.
+where $`\mathbf{e}_i`$ denotes the unit selection vector for
+state $`i`$.
 
 The film thickness output has a **nonlinear coupling** that
-produces a non-trivial $\mathbf{C}_c$ row:
+produces a non-trivial $`\mathbf{C}_c`$ row:
 
-$$
+```math
 \frac{\partial h_{total}}{\partial Q_k}
 \bigg|_0
 = \frac{\rho_{mix,k,0}}
        {2\pi R_0 \rho_{mix,0} v_{z,0}}
-$$
+```
 
-$$
+```math
 \frac{\partial h_{total}}{\partial R}
 \bigg|_0
 = -\frac{\dot{m}_{total,0}}
         {2\pi R_0^2 \rho_{mix,0} v_{z,0}}
-$$
+```
 
 ---
 
@@ -1196,7 +1180,7 @@ $$
 
 Assembling all blocks, the **continuous-time linearised system** is:
 
-$$
+```math
 \boxed{
 \dot{\tilde{\mathbf{x}}}
 = \mathbf{A}_c\,\tilde{\mathbf{x}} +
@@ -1206,33 +1190,33 @@ $$
 = \mathbf{C}_c\,\tilde{\mathbf{x}} +
 \mathbf{D}_c\,\tilde{\mathbf{u}}
 }
-$$
+```
 
-$$
+```math
 \mathbf{A}_c \in \mathbb{R}^{146 \times 146}, \quad
 \mathbf{B}_c \in \mathbb{R}^{146 \times 96}, \quad
 \mathbf{C}_c \in \mathbb{R}^{58 \times 146}, \quad
 \mathbf{D}_c \approx \mathbf{0}
-$$
+```
 
 #### 4.1 Stability of the Linearised System
 
 The linearised system is **asymptotically stable** if and only if
-all eigenvalues of $\mathbf{A}_c$ have strictly negative real parts:
+all eigenvalues of $`\mathbf{A}_c`$ have strictly negative real parts:
 
-$$
+```math
 \text{Re}\bigl(\lambda_i(\mathbf{A}_c)\bigr) < 0,
 \qquad \forall\, i = 1,\ldots,146
-$$
+```
 
 The dominant (slowest) eigenvalues correspond to the **thermal
 states** of the barrel and die, with time constants:
 
-$$
+```math
 \tau_i = -\frac{1}{\text{Re}(\lambda_i)}
-$$
+```
 
-| Subsystem | Dominant $\tau$ (s) |
+| Subsystem | Dominant $`\tau`$ (s) |
 |-----------|-------------------|
 | Roll build-up | 300 – 1800 |
 | Barrel zone temperatures | 200 – 600 |
@@ -1249,7 +1233,7 @@ $$
 
 **Controllability** (Kalman rank condition):
 
-$$
+```math
 \text{rank}\,\mathcal{C}
 = \text{rank}
 \begin{bmatrix}
@@ -1260,11 +1244,11 @@ $$
   \mathbf{A}_c^{145}\mathbf{B}_c
 \end{bmatrix}
 = 146
-$$
+```
 
 **Observability** (Kalman rank condition):
 
-$$
+```math
 \text{rank}\,\mathcal{O}
 = \text{rank}
 \begin{bmatrix}
@@ -1275,7 +1259,7 @@ $$
   \mathbf{C}_c\mathbf{A}_c^{145}
 \end{bmatrix}
 = 146
-$$
+```
 
 > ⚠️ **Practical note:** Full-rank controllability and observability
 > of the 146-state system are necessary but not sufficient for
@@ -1291,33 +1275,33 @@ $$
 #### 5.1 Zero-Order Hold (ZOH) Discretisation
 
 The continuous-time system is converted to discrete time with
-sampling period $T_s = 3\,\text{s}$ using the **matrix exponential**
+sampling period $`T_s = 3\,\text{s}`$ using the **matrix exponential**
 (exact for piecewise-constant inputs):
 
-$$
+```math
 \mathbf{A}_d
 = e^{\mathbf{A}_c T_s}
 = \sum_{k=0}^{\infty}
   \frac{(\mathbf{A}_c T_s)^k}{k!}
-$$
+```
 
-$$
+```math
 \mathbf{B}_d
 = \mathbf{A}_c^{-1}
   \bigl(e^{\mathbf{A}_c T_s} - \mathbf{I}\bigr)
   \mathbf{B}_c
 = \int_0^{T_s} e^{\mathbf{A}_c\tau}\,d\tau\;\mathbf{B}_c
-$$
+```
 
-$$
+```math
 \mathbf{C}_d = \mathbf{C}_c,
 \qquad
 \mathbf{D}_d = \mathbf{D}_c
-$$
+```
 
 Computed efficiently via the **Van Loan method**:
 
-$$
+```math
 \exp\!\left(
   \begin{bmatrix}
     \mathbf{A}_c & \mathbf{B}_c \\
@@ -1330,20 +1314,20 @@ $$
   \mathbf{A}_d & \mathbf{B}_d \\
   \mathbf{0}   & \mathbf{I}
 \end{bmatrix}
-$$
+```
 
 #### 5.2 Sampling Time Selection
 
-The sampling time $T_s = 3\,\text{s}$ is chosen to satisfy the
+The sampling time $`T_s = 3\,\text{s}`$ is chosen to satisfy the
 **Shannon–Nyquist criterion** for the fastest controlled mode:
 
-$$
+```math
 T_s \leq \frac{\tau_{min}}{10}
 = \frac{30\,\text{s}}{10}
 = 3\,\text{s}
-$$
+```
 
-where $\tau_{min} = 30\,\text{s}$ is the fastest slow-subsystem
+where $`\tau_{min} = 30\,\text{s}`$ is the fastest slow-subsystem
 time constant (film thickness / bubble dynamics). The fast states
 (drives, pressure, dosing speed) are eliminated by singular
 perturbation before discretisation.
@@ -1351,24 +1335,24 @@ perturbation before discretisation.
 #### 5.3 Discrete-Time Stability
 
 The discrete-time system is stable if and only if all eigenvalues
-of $\mathbf{A}_d$ lie strictly inside the unit circle:
+of $`\mathbf{A}_d`$ lie strictly inside the unit circle:
 
-$$
+```math
 |\lambda_i(\mathbf{A}_d)| < 1,
 \qquad \forall\, i = 1,\ldots,146
-$$
+```
 
 The ZOH mapping preserves stability:
 
-$$
+```math
 \text{Re}(\lambda_i(\mathbf{A}_c)) < 0
 \;\Longleftrightarrow\;
 |\lambda_i(\mathbf{A}_d)| < 1
-$$
+```
 
 The resulting **full-order discrete-time linearised system** is:
 
-$$
+```math
 \boxed{
 \tilde{\mathbf{x}}_{k+1}
 = \mathbf{A}_d\,\tilde{\mathbf{x}}_k +
@@ -1378,14 +1362,14 @@ $$
 = \mathbf{C}_d\,\tilde{\mathbf{x}}_k +
 \mathbf{D}_d\,\tilde{\mathbf{u}}_k
 }
-$$
+```
 
-$$
+```math
 \mathbf{A}_d \in \mathbb{R}^{146 \times 146}, \quad
 \mathbf{B}_d \in \mathbb{R}^{146 \times 96}, \quad
 \mathbf{C}_d \in \mathbb{R}^{58 \times 146}, \quad
 \mathbf{D}_d \approx \mathbf{0}
-$$
+```
 
 ---
 
@@ -1395,27 +1379,27 @@ The linearised model is valid within a **neighbourhood of the
 operating point** where the neglected higher-order terms remain
 small. The validity region is characterised by:
 
-$$
+```math
 \|\tilde{\mathbf{x}}\| \leq \delta_x,
 \qquad
 \|\tilde{\mathbf{u}}\| \leq \delta_u
-$$
+```
 
-where $\delta_x$ and $\delta_u$ are determined by the dominant
+where $`\delta_x`$ and $`\delta_u`$ are determined by the dominant
 nonlinearities in the system:
 
 | Nonlinearity | Source | Validity Bound |
 |--------------|--------|---------------|
-| Arrhenius viscosity | $\mu \propto e^{E_a/RT}$ | $\|\tilde{T}\| \leq 15\,°\text{C}$ |
-| Power-law shear thinning | $\mu \propto \dot{\gamma}^{n-1}$ | $\|\tilde{\dot{\gamma}}\| \leq 20\%$ |
-| Bubble geometry | $R(z,t)$ free surface | $\|\tilde{R}\| \leq 10\%\,R_0$ |
-| Film thickness | $h \propto 1/(R\,v_z)$ | $\|\tilde{h}\| \leq 15\%\,h_0$ |
-| Roll build-up | $\dot{R}_{roll} \propto 1/R_{roll}$ | $\|\tilde{R}_{roll}\| \leq 20\%\,R_0$ |
+| Arrhenius viscosity | $`\mu \propto e^{E_a/RT}`$ | $`\|\tilde{T}\| \leq 15\,°\text{C}`$ |
+| Power-law shear thinning | $`\mu \propto \dot{\gamma}^{n-1}`$ | $`\|\tilde{\dot{\gamma}}\| \leq 20\%`$ |
+| Bubble geometry | $`R(z,t)`$ free surface | $`\|\tilde{R}\| \leq 10\%\,R_0`$ |
+| Film thickness | $`h \propto 1/(R\,v_z)`$ | $`\|\tilde{h}\| \leq 15\%\,h_0`$ |
+| Roll build-up | $`\dot{R}_{roll} \propto 1/R_{roll}`$ | $`\|\tilde{R}_{roll}\| \leq 20\%\,R_0`$ |
 
 > 💡 **Implication for MPC:** The MPC input/output constraints
 > (configured via `MPCConfig.u_bound` and `MPCConfig.y_bound`)
 > should be set to keep the system within this validity region.
-> The default values of $\pm 3\sigma$ in normalised space
+> The default values of $`\pm 3\sigma`$ in normalised space
 > are chosen to respect these bounds under typical operating
 > conditions.
 
@@ -1425,18 +1409,18 @@ nonlinearities in the system:
 
 In practice, the analytical Jacobians derived above require
 **precise knowledge** of all physical parameters
-($E_{a,k}$, $n_k$, $h_{conv}$, $UA_l$, etc.), which are
+($`E_{a,k}`$, $`n_k`$, $`h_{conv}`$, $`UA_l`$, etc.), which are
 **material- and grade-dependent** and difficult to measure directly.
 
 The **N4SID subspace identification** algorithm used in this
 pipeline bypasses this requirement by estimating the
-$(A_d, B_d, C_d, D_d)$ matrices **directly from SCADA data**,
+$`(A_d, B_d, C_d, D_d)`$ matrices **directly from SCADA data**,
 implicitly capturing the linearised dynamics at the operating
 point encoded in the data.
 
 The relationship between the analytical and identified models is:
 
-$$
+```math
 \underbrace{
   \hat{\mathbf{A}}_d,\,
   \hat{\mathbf{B}}_d,\,
@@ -1456,9 +1440,9 @@ $$
   \boldsymbol{\Delta}_C,\,
   \boldsymbol{\Delta}_D
 }_{\text{identification error}}
-$$
+```
 
-The identification error $\boldsymbol{\Delta}$ arises from:
+The identification error $`\boldsymbol{\Delta}`$ arises from:
 - Finite data length and measurement noise
 - Unmodelled nonlinearities within the operating region
 - Grade-to-grade parameter variations
@@ -1466,8 +1450,8 @@ The identification error $\boldsymbol{\Delta}$ arises from:
 
 The **parameter optimisation** step (L-BFGS-B refinement in
 `system_identification.py`) minimises the Frobenius norm of
-$\boldsymbol{\Delta}$ subject to the stability constraint
-$\rho(\hat{\mathbf{A}}_d) < 1$.
+$`\boldsymbol{\Delta}`$ subject to the stability constraint
+$`\rho(\hat{\mathbf{A}}_d) < 1`$.
 
 ---
 
