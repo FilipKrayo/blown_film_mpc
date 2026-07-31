@@ -615,6 +615,7 @@ class IdentificationConfig:
     optimisation_method: str = "L-BFGS-B"
     optimisation_max_iter: int = 100
     optimisation_samples: int = 500
+    method: str = "physical"          # "physical" (grey-box) or "n4sid" (black-box)
 
 
 @dataclass(frozen=True)
@@ -689,6 +690,37 @@ class SimulationConfig:
     ref_amplitude_2: float = -0.3
 
 
+@dataclass(frozen=True)
+class PhysicalModelConfig:
+    """
+    Subsystem multiplicities for ``physical_model.FirstPrinciplesModel``.
+
+    Defaults align extruder/IBC/winder counts with the real dataset
+    (``config.INPUT_COLS``/``OUTPUT_COLS``: 3 extruders x 4 zone
+    setpoints each, 3 IBC units, 2 winders); zone/component/die-zone
+    counts are internal spatial/physical resolution choices not tied
+    to a specific SCADA tag count. The resulting state count is NOT
+    forced to the README's illustrative 146 (see physical_model.py
+    module docstring) — it follows directly from these multiplicities.
+    """
+
+    n_extruders: int = 3
+    n_zones: int = 4
+    n_components: int = 5
+    n_die_zones: int = 7
+    n_ibc: int = 3
+    n_winders: int = 2
+    grey_box_max_iter: int = 30
+    grey_box_optimisation_method: str = "L-BFGS-B"
+
+    # Singular perturbation (README's "Time-scale separation" pipeline
+    # step — eliminates states faster than the MPC sample rate can
+    # observe anyway; see physical_model.eliminate_fast_states).
+    enable_singular_perturbation: bool = True
+    fast_time_constant_threshold_factor: float = 3.0   # tau_threshold = factor * Ts
+    singular_perturbation_min_gap: float = 3.0          # required tau separation margin
+
+
 @dataclass
 class ProjectConfig:
     """
@@ -710,4 +742,5 @@ class ProjectConfig:
     kalman: KalmanConfig = field(default_factory=KalmanConfig)
     mpc: MPCConfig = field(default_factory=MPCConfig)
     simulation: SimulationConfig = field(default_factory=SimulationConfig)
+    physical_model: PhysicalModelConfig = field(default_factory=PhysicalModelConfig)
     output_dir: str = "outputs"

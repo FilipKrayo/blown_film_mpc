@@ -105,7 +105,7 @@ class ModelReducer:
     Ts  : sampling period (seconds)
     """
 
-    _GRAMIAN_REGULARISATION: float = 1e-8
+    _GRAMIAN_REGULARISATION: float = 1e-5
 
     def __init__(
         self,
@@ -199,7 +199,6 @@ class ModelReducer:
         A_r, B_r, C_r, D_r, hsv
         """
         logger.info("Computing balanced truncation ...")
-        reg = self._GRAMIAN_REGULARISATION * np.eye(A.shape[0])
 
         try:
             Wc = solve_discrete_lyapunov(A, B @ B.T)
@@ -209,8 +208,17 @@ class ModelReducer:
             Wc = np.eye(A.shape[0])
             Wo = np.eye(A.shape[0])
 
-        Wc = (Wc + Wc.T) / 2 + reg
-        Wo = (Wo + Wo.T) / 2 + reg
+        Wc = (Wc + Wc.T) / 2
+        Wo = (Wo + Wo.T) / 2
+        # Regularise relative to each Gramian's own scale: a fixed
+        # absolute epsilon is negligible for near-resonant eigenvalue
+        # pairs (|lambda_i * lambda_j| ~ 1), a known discrete-Lyapunov
+        # ill-conditioning case that leaves tiny (numerical-noise-level)
+        # negative eigenvalues Cholesky then rejects.
+        reg_c = self._GRAMIAN_REGULARISATION * max(1.0, float(np.max(np.abs(Wc)))) * np.eye(A.shape[0])
+        reg_o = self._GRAMIAN_REGULARISATION * max(1.0, float(np.max(np.abs(Wo)))) * np.eye(A.shape[0])
+        Wc = Wc + reg_c
+        Wo = Wo + reg_o
 
         Lc = cholesky(Wc, lower=True)
         Lo = cholesky(Wo, lower=True)

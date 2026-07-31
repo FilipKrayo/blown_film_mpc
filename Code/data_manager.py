@@ -6,7 +6,8 @@ Responsible for all data I/O, cleaning, scaling and splitting.
 Classes
 -------
 SyntheticDataGenerator
-    Generates a stable LTI-driven synthetic dataset for testing.
+    Generates a physically-structured synthetic dataset from the
+    linearised first-principles blown film model.
 DataManager
     Loads real CSV/Excel data, preprocesses it, scales it and
     exposes train/test splits as numpy arrays.
@@ -25,7 +26,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import RobustScaler
 
-from config import ALL_COLUMNS, INPUT_COLS, OUTPUT_COLS, DataConfig
+from config import ALL_COLUMNS, INPUT_COLS, OUTPUT_COLS, DataConfig, PhysicalModelConfig
 
 logger = logging.getLogger(__name__)
 
@@ -91,67 +92,78 @@ class IODataset:
 
 class SyntheticDataGenerator:
     """
-    Generates a synthetic input-output dataset driven by a random
-    stable discrete-time LTI system.
+    Generates a physically-structured synthetic input-output dataset
+    from the linearised, discretised first-principles blown film model
+    (``physical_model.FirstPrinciplesModel``), replacing the previous
+    random dense-LTI ground truth. Inputs are smoothed perturbation
+    signals around the model's nominal operating point (README §2);
+    outputs are simulated through the linear model with light
+    eigenvalue-clipping stabilisation applied purely for bounded data
+    generation. The real line is never operated open-loop (IBC/haul-
+    off/winder feedback keeps it stable in practice), so this
+    substitutes for that closed-loop stabilisation rather than
+    representing a modelling error.
 
     Parameters
     ----------
-    n_inputs  : number of input channels
-    n_outputs : number of output channels
-    n_states  : hidden state dimension of the ground-truth system
-    cfg       : DataConfig instance
+    cfg      : DataConfig instance
+    phys_cfg : PhysicalModelConfig instance (subsystem multiplicities)
     """
 
     def __init__(
         self,
-        n_inputs: int,
-        n_outputs: int,
-        n_states: int = 12,
         cfg: DataConfig = DataConfig(),
+        phys_cfg: Optional[PhysicalModelConfig] = None,
     ) -> None:
-        self._n_u = n_inputs
-        self._n_y = n_outputs
-        self._n   = n_states
         self._cfg = cfg
+        self._phys_cfg = phys_cfg or PhysicalModelConfig()
 
     # ------------------------------------------------------------------
     def generate(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Return (U, Y) arrays of shape (n_samples, n_u/n_y).
-
-        The ground-truth system has spectral radius < 1 (stable).
-        Inputs are smoothed white noise; outputs are corrupted by
-        Gaussian measurement noise.
+        Return (U, Y) arrays of shape (n_samples, n_u/n_y), where n_u/
+        n_y are the ``FirstPrinciplesModel``'s own input/output counts
+        (see config.PhysicalModelConfig), not len(INPUT_COLS/OUTPUT_COLS).
         """
+        from physical_model import FirstPrinciplesModel, stabilise_discrete_matrix  # local import avoids a cycle
+
+        pc = self._phys_cfg
+        model = FirstPrinciplesModel(
+            n_extruders=pc.n_extruders, n_zones=pc.n_zones,
+            n_components=pc.n_components, n_die_zones=pc.n_die_zones,
+            n_ibc=pc.n_ibc, n_winders=pc.n_winders,
+        )
+        tau_threshold = (
+            pc.fast_time_constant_threshold_factor * self._cfg.sampling_time
+            if pc.enable_singular_perturbation else None
+        )
+        ss, x0, u0, _ = model.to_state_space_model(
+            Ts=self._cfg.sampling_time, tau_threshold=tau_threshold,
+            min_spectral_gap=pc.singular_perturbation_min_gap,
+        )
+        A_d = stabilise_discrete_matrix(ss.A)
+
         rng = np.random.default_rng(self._cfg.random_seed)
-        n, m, p = self._n, self._n_u, self._n_y
         T = self._cfg.synthetic_samples
+        m, p = ss.n_inputs, ss.n_outputs
 
-        # Build random stable A_d
-        A_raw = rng.standard_normal((n, n))
-        rho   = np.max(np.abs(np.linalg.eigvals(A_raw)))
-        A_d   = A_raw / (rho + 0.1) * 0.85
-
-        B_d = rng.standard_normal((n, m)) * 0.1
-        C_d = rng.standard_normal((p, n)) * 0.5
-
-        # Smooth random inputs
-        U = rng.standard_normal((T, m))
+        # Smoothed perturbation inputs, scaled relative to each input's
+        # own nominal magnitude (small excitation around the operating point).
+        dU = rng.standard_normal((T, m))
         kernel = np.ones(20) / 20
         for j in range(m):
-            U[:, j] = np.convolve(U[:, j], kernel, mode="same")
+            dU[:, j] = np.convolve(dU[:, j], kernel, mode="same")
+        U = dU * (0.02 * np.maximum(np.abs(u0), 1.0))
 
-        # Simulate
         Y = np.zeros((T, p))
-        x = np.zeros(n)
+        x = np.zeros(ss.n_states)   # perturbation state (x - x0)
         noise_std = self._cfg.synthetic_noise_std
         for t in range(T):
-            Y[t] = C_d @ x + noise_std * rng.standard_normal(p)
-            x    = A_d @ x + B_d @ U[t]
+            Y[t] = ss.C @ x + ss.D @ U[t] + noise_std * rng.standard_normal(p)
+            x    = A_d @ x + ss.B @ U[t]
 
         logger.info(
-            "Synthetic dataset generated: "
-            "U%s, Y%s", U.shape, Y.shape
+            "Physics-based synthetic dataset generated: U%s, Y%s", U.shape, Y.shape
         )
         return U, Y
 
@@ -203,26 +215,16 @@ class DataManager:
         detected_ts = self._detect_sampling_time(df)
         return self._build_dataset(df, detected_sampling_time=detected_ts)
 
-    def prepare_synthetic(
-        self,
-        n_inputs: Optional[int] = None,
-        n_outputs: Optional[int] = None,
-    ) -> IODataset:
+    def prepare_synthetic(self) -> IODataset:
         """
-        Build an IODataset from synthetic data.
-
-        Parameters
-        ----------
-        n_inputs  : override number of inputs  (defaults to len(INPUT_COLS))
-        n_outputs : override number of outputs (defaults to len(OUTPUT_COLS))
+        Build an IODataset from physics-based synthetic data. Input/
+        output counts come from the FirstPrinciplesModel's own
+        multiplicities (config.PhysicalModelConfig), not len(INPUT_COLS)/
+        len(OUTPUT_COLS).
         """
-        n_u = n_inputs  or len(INPUT_COLS)
-        n_y = n_outputs or len(OUTPUT_COLS)
-
-        gen = SyntheticDataGenerator(
-            n_inputs=n_u, n_outputs=n_y, cfg=self._cfg
-        )
+        gen = SyntheticDataGenerator(cfg=self._cfg)
         U_all, Y_all = gen.generate()
+        n_u, n_y = U_all.shape[1], Y_all.shape[1]
         return self._scale_and_split(
             U_all, Y_all,
             input_cols=[f"u_{i}" for i in range(n_u)],

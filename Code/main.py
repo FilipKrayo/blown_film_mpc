@@ -106,9 +106,11 @@ from config import (
 )
 from data_manager import DataManager, IODataset
 from estimation import KalmanFilter
+from grey_box import GreyBoxIdentifier
 from model_reduction import ModelReducer, ReducedModel
 from mpc_controller import MPCController, MPCWeightOptimiser
 from persistence import ControllerWeightsStore, ModelStore
+from physical_model import FirstPrinciplesModel
 from simulation import ClosedLoopSimulator, ModelValidator, SimulationResult
 from system_identification import (
     ParameterOptimiser,
@@ -320,12 +322,97 @@ class BlownFilmPipeline:
     # ------------------------------------------------------------------
     def _stage_identification(self) -> None:
         """
+        Dispatch to the configured identification method
+        (``IdentificationConfig.method``): ``"physical"`` (default) —
+        grey-box parameter optimisation of a FirstPrinciplesModel — or
+        ``"n4sid"`` — the original black-box subspace identification.
+        """
+        logger.info("━━━ STAGE 2: System Identification ━━━")
+        if self._cfg.identification.method == "physical":
+            self._stage_identification_physical()
+        else:
+            self._stage_identification_n4sid()
+
+    def _stage_identification_physical(self) -> None:
+        """
+        Grey-box identification: optimise FirstPrinciplesModel physical
+        parameter-group scales against the training data (grey_box.py).
+        The model's state count is fixed by ``PhysicalModelConfig``
+        multiplicities (no "order" to escalate), so the accuracy gate
+        is checked once — a failure raises ``ModelAccuracyError``
+        directly instead of retrying at a different order.
+        """
+        ds       = self._dataset
+        acc_cfg  = self._cfg.accuracy
+        phys_cfg = self._cfg.physical_model
+
+        phys_model = FirstPrinciplesModel(
+            n_extruders=phys_cfg.n_extruders, n_zones=phys_cfg.n_zones,
+            n_components=phys_cfg.n_components, n_die_zones=phys_cfg.n_die_zones,
+            n_ibc=phys_cfg.n_ibc, n_winders=phys_cfg.n_winders,
+        )
+        horizon_seconds = self._cfg.mpc.prediction_horizon * self._cfg.data.sampling_time
+        identifier = GreyBoxIdentifier(
+            model=phys_model, Ts=self._cfg.data.sampling_time, cfg=phys_cfg,
+            horizon_seconds=horizon_seconds,
+        )
+        model, gb_result, U_model = identifier.fit(ds.U_train, ds.Y_train)
+
+        check = evaluate_accuracy(
+            ds.Y_train, model.simulate(U_model), ds.output_cols,
+            stage="post-identification",
+            threshold=acc_cfg.min_r2,
+            n_states=model.n_states,
+        )
+        logger.info(check.summary())
+        if acc_cfg.enabled and not check.passed:
+            raise ModelAccuracyError(
+                "Grey-box physical identification could not reach the "
+                f"required accuracy (worst-case R²={check.worst_r2:.4f} on "
+                f"output {check.worst_output!r}, need >={acc_cfg.min_r2:.4f}) "
+                f"at n_states={model.n_states}. This path has no order to "
+                "escalate — consider --identification_method n4sid, richer "
+                "excitation data, or raising PhysicalModelConfig.grey_box_max_iter."
+            )
+
+        self._ss_model = model
+        avg_r2 = float(np.mean(check.per_output_r2))
+        logger.info("Identified model: %r", model)
+
+        sp = identifier.last_diagnostics
+        sp_summary = "disabled"
+        if sp is not None:
+            if sp["applied"]:
+                sp_summary = (
+                    f"{sp['n_fast']} fast state(s) eliminated, {sp['n_slow']} retained "
+                    f"(spectral gap {sp['spectral_gap']:.2f}x, DC-gain error "
+                    f"{sp['dc_gain_rel_error']:.1%}"
+                    + (f", horizon error {sp['horizon_rel_error']:.1%}" if sp["horizon_rel_error"] is not None else "")
+                    + ")"
+                )
+            else:
+                sp_summary = "not applied (" + "; ".join(sp["warnings"]) + ")" if sp["warnings"] else "not applied"
+
+        self._report.add_section(
+            "2. System Identification (Grey-Box / Physical)",
+            f"Model order       : {model.n_states}\n"
+            f"Stable            : {model.is_stable}\n"
+            f"Spectral rho      : {model.spectral_radius:.4f}\n"
+            f"Training R² (avg) : {avg_r2:.4f}\n"
+            f"Grey-box cost     : {gb_result.cost:.6g}\n"
+            f"Grey-box success  : {gb_result.success} "
+            f"({gb_result.n_iterations} evaluations)\n"
+            f"Singular pert.    : {sp_summary}\n"
+            f"Accuracy gate     : {check.summary()}",
+        )
+
+    def _stage_identification_n4sid(self) -> None:
+        """
         Run N4SID (+ optional parameter refinement). If the accuracy
         gate is enabled, escalate ``n_states`` and retry until every
         output's training R² clears ``AccuracyConfig.min_r2``, up to
         ``max_n_states``.
         """
-        logger.info("━━━ STAGE 2: System Identification ━━━")
         ds      = self._dataset
         id_cfg  = self._cfg.identification
         acc_cfg = self._cfg.accuracy
@@ -394,6 +481,7 @@ class BlownFilmPipeline:
             f"Param opt         : {id_cfg.optimise_params}\n"
             f"Accuracy gate     : {check.summary()}",
         )
+
 
     # ------------------------------------------------------------------
     def _stage_reduction(self) -> None:
@@ -658,7 +746,17 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--n_id", type=int, default=145,
-        help="N4SID model order",
+        help="N4SID model order (only used when --identification_method n4sid)",
+    )
+    parser.add_argument(
+        "--identification_method", type=str, default="physical",
+        choices=["physical", "n4sid"],
+        help=(
+            "'physical': grey-box — optimise FirstPrinciplesModel physical "
+            "parameter scales against the data (see grey_box.py). "
+            "'n4sid': black-box N4SID subspace identification (+ optional "
+            "L-BFGS-B refinement), the previous default."
+        ),
     )
     parser.add_argument(
         "--n_red", type=int, default=22,
@@ -747,6 +845,7 @@ def main() -> None:
         identification=IdentificationConfig(
             n_states=args.n_id,
             optimise_params=not args.no_param_opt,
+            method=args.identification_method,
         ),
         reduction=ReductionConfig(n_states_bt=args.n_red),
         accuracy=AccuracyConfig(
