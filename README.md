@@ -28,6 +28,7 @@
 - [Dataset Format](#-dataset-format)
 - [Performance Notes](#-performance-notes)
 - [Model & Weight Caching](#-model--weight-caching)
+- [Accuracy Gate](#-accuracy-gate)
 - [OOP Design Principles](#-oop-design-principles)
 - [Dependencies](#-dependencies)
 - [Troubleshooting](#-troubleshooting)
@@ -415,7 +416,11 @@ python main.py --no_show --output_dir results
 | `--output_dir` | `outputs` | Directory for figures and report |
 | `--n_id` | `20` | N4SID model order |
 | `--n_red` | `12` | Target order after balanced truncation |
-| `--Ts` | `3.0` | Sampling time in seconds |
+| `--min_r2` | `0.95` | Required worst-case per-output R² (accuracy gate) |
+| `--max_n_states` | `60` | Ceiling for automatic N4SID order escalation on gate failure |
+| `--max_n_states_bt` | `50` | Ceiling for automatic reduction-order escalation on gate failure |
+| `--no_accuracy_gate` | `False` | Disable the minimum-accuracy gate entirely (debugging only) |
+| `--Ts` | `None` (auto) | Sampling time in seconds. Auto-detected from data timestamps for real data (falls back to 3.0s); explicit values override auto-detection |
 | `--Np` | `20` | MPC prediction horizon |
 | `--Nc` | `8` | MPC control horizon |
 | `--T_sim` | `300` | Closed-loop simulation steps |
@@ -442,6 +447,7 @@ bounds, priority weights, etc.) is edited directly in `config.py`.
 | `DataConfig` | `sampling_time`, `train_fraction`, `outlier_zscore`, `synthetic_samples`, `random_seed` |
 | `IdentificationConfig` | `n_states`, `n_block_rows`, `optimise_params`, `optimisation_method` |
 | `ReductionConfig` | `n_states_bt`, `bt_energy_tolerance`, `pod_energy_tolerance` |
+| `AccuracyConfig` | `min_r2`, `enabled`, `max_n_states`, `n_states_step`, `max_n_states_bt`, `n_states_bt_step` |
 | `KalmanConfig` | `process_noise_scale`, `measurement_noise_scale` |
 | `MPCConfig` | `prediction_horizon`, `control_horizon`, `u_bound`, `du_bound`, `y_bound`, `q_thickness_weight`, `q_temperature_weight`, `r_weight`, `optimise_weights`, `weight_opt_iterations` |
 | `SimulationConfig` | `n_steps`, `noise_std`, `ref_step_time_1/2/3`, `ref_amplitude_1/2` |
@@ -455,9 +461,9 @@ from the parsed CLI arguments before constructing `BlownFilmPipeline`.
 
 `BlownFilmPipeline.run()` executes eight stages in order:
 
-1. **Data** — load real data or generate synthetic data, clean, scale, split
-2. **System Identification** — N4SID subspace identification (+ optional L-BFGS-B refinement)
-3. **Model Order Reduction** — balanced truncation → POD/Galerkin → integrator augmentation
+1. **Data** — load real data or generate synthetic data, clean, scale, split (sampling time auto-detected from timestamps for real data)
+2. **System Identification** — N4SID subspace identification (+ optional L-BFGS-B refinement); order escalates automatically if the accuracy gate fails
+3. **Model Order Reduction** — balanced truncation → POD/Galerkin → integrator augmentation; reduced order escalates automatically if the accuracy gate fails
 4. **Kalman Filter** — steady-state gain design on the augmented state
 5. **Model Validation** — open-loop test-set metrics (R², NRMSE, MSE) per output
 6. **MPC Design** — builds the QP and, if enabled, tunes Q/R weights via Nelder-Mead
@@ -502,6 +508,16 @@ corresponding signal to be picked up. If no `--data` path is given,
 `SyntheticDataGenerator` produces a stable random LTI-driven dataset
 with the same input/output dimensions so the full pipeline can be
 exercised without real plant data.
+
+**Sampling time.** `Ts` is not assumed — it's derived from the `Datum`
+column. `DataManager` computes the median interval between
+consecutive timestamps (median rather than mean, so occasional data
+gaps don't skew it) and the pipeline adopts that value automatically
+unless `--Ts` is passed explicitly, in which case a mismatch only
+logs a warning. This matters because a wrong `Ts` doesn't affect the
+N4SID fit itself (each row is one discrete sample regardless), but it
+does silently distort every physical-time interpretation downstream —
+MPC prediction-horizon duration, ITAE scaling, and reported timings.
 
 ---
 
@@ -570,6 +586,29 @@ Key points:
   `set_weights()`.
 - Both cache paths are configurable via `--model_path` /
   `--controller_path`, and `saved/` is git-ignored.
+
+---
+
+## 🎯 Accuracy Gate
+
+Every output must individually reach a minimum worst-case R² (default
+`0.95`, `AccuracyConfig.min_r2`) before the pipeline is allowed to
+proceed — checked twice:
+
+| Stage | Checked against | On failure |
+|-------|------------------|------------|
+| Post-identification | Training data | Escalate `n_states` by `n_states_step` (default 5), up to `--max_n_states` (default 60) |
+| Post-reduction | Held-out test data | Escalate `n_states_bt` by `n_states_bt_step` (default 2), up to `--max_n_states_bt` (default 50) |
+
+If escalation exhausts its ceiling without meeting the threshold, a
+`ModelAccuracyError` halts the pipeline with a diagnostic message
+(worst output, achieved R², order reached) instead of silently
+shipping an inaccurate model. A cached model (see above) is
+re-validated against the same gate before being trusted — a cache
+that no longer passes triggers a full rebuild.
+
+Tune or disable via `--min_r2`, `--max_n_states`, `--max_n_states_bt`,
+`--no_accuracy_gate`.
 
 ---
 

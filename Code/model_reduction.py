@@ -140,8 +140,14 @@ class ModelReducer:
             A_s, model.B, model.C, model.D
         )
 
-        # Stage 2: POD / Galerkin on state snapshots
-        A_r, B_r, C_r = self._pod_galerkin(A_r, B_r, C_r, model.B.shape[1])
+        # Stage 2: POD / Galerkin on state snapshots. Floored at the
+        # configured target order so this purely energy-based stage
+        # can't silently discard fast-but-low-energy modes that
+        # balanced truncation already decided to keep.
+        min_states = min(self._cfg.n_states_bt, A_r.shape[0])
+        A_r, B_r, C_r = self._pod_galerkin(
+            A_r, B_r, C_r, model.B.shape[1], min_states=min_states
+        )
 
         # The input model is already discrete-time (identified directly
         # from sampled data by N4SID at Ts), and both balanced truncation
@@ -244,9 +250,13 @@ class ModelReducer:
         B_r: np.ndarray,
         C_r: np.ndarray,
         n_u: int,
+        min_states: int = 2,
     ):
         """
         Further reduce via POD on simulated state snapshots.
+
+        ``min_states`` floors the result so this energy-based stage
+        cannot cut below the caller's configured target order.
         """
         logger.info("Running POD/Galerkin projection ...")
         T_snap = 500
@@ -262,7 +272,7 @@ class ModelReducer:
         U_pod, S_pod, _ = svd(X_snap.T, full_matrices=False)
         energy = np.cumsum(S_pod ** 2) / (np.sum(S_pod ** 2) + 1e-12)
         r_pod  = int(np.searchsorted(energy, self._cfg.pod_energy_tolerance)) + 1
-        r_pod  = max(r_pod, 2)
+        r_pod  = max(r_pod, min_states)
         r_pod  = min(r_pod, A_r.shape[0])
 
         logger.info(

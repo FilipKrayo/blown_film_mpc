@@ -627,6 +627,29 @@ class ReductionConfig:
 
 
 @dataclass(frozen=True)
+class AccuracyConfig:
+    """
+    Minimum-accuracy gate enforced after identification and again
+    after reduction. Every output must individually reach ``min_r2``
+    (worst-case, not average); if it doesn't, the corresponding model
+    order is escalated and re-fit until it does, up to the configured
+    ceiling — see ``BlownFilmPipeline._stage_identification`` /
+    ``_stage_reduction`` in main.py.
+    """
+
+    min_r2: float = 0.95
+    enabled: bool = True
+
+    # N4SID order escalation (pre-reduction, evaluated on training data)
+    max_n_states: int = 60
+    n_states_step: int = 5
+
+    # Reduction order escalation (post BT+POD, evaluated on test data)
+    max_n_states_bt: int = 50
+    n_states_bt_step: int = 2
+
+
+@dataclass(frozen=True)
 class KalmanConfig:
     """Kalman filter noise covariance parameters."""
 
@@ -683,6 +706,7 @@ class ProjectConfig:
         default_factory=IdentificationConfig
     )
     reduction: ReductionConfig = field(default_factory=ReductionConfig)
+    accuracy: AccuracyConfig = field(default_factory=AccuracyConfig)
     kalman: KalmanConfig = field(default_factory=KalmanConfig)
     mpc: MPCConfig = field(default_factory=MPCConfig)
     simulation: SimulationConfig = field(default_factory=SimulationConfig)

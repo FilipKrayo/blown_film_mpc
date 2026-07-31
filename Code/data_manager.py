@@ -47,6 +47,8 @@ class IODataset:
     output_cols      : list of output column names
     scaler_u         : fitted RobustScaler for inputs
     scaler_y         : fitted RobustScaler for outputs
+    detected_sampling_time : median Δt (s) from real-data timestamps,
+                              None for synthetic data
     """
 
     U_train: np.ndarray
@@ -57,6 +59,7 @@ class IODataset:
     output_cols: List[str]
     scaler_u: RobustScaler
     scaler_y: RobustScaler
+    detected_sampling_time: Optional[float] = None
 
     @property
     def n_inputs(self) -> int:
@@ -197,7 +200,8 @@ class DataManager:
         df = self._load_file(filepath)
         df = self._validate_columns(df)
         df = self._clean(df)
-        return self._build_dataset(df)
+        detected_ts = self._detect_sampling_time(df)
+        return self._build_dataset(df, detected_sampling_time=detected_ts)
 
     def prepare_synthetic(
         self,
@@ -282,7 +286,20 @@ class DataManager:
         logger.info("After cleaning: %d rows remain.", len(df))
         return df
 
-    def _build_dataset(self, df: pd.DataFrame) -> IODataset:
+    def _detect_sampling_time(self, df: pd.DataFrame) -> Optional[float]:
+        """Median Δt (s) between consecutive timestamps, or None if unavailable."""
+        time_col = self._cfg.time_column
+        if time_col not in df.columns or len(df) < 2:
+            return None
+        deltas = df[time_col].diff().dropna().dt.total_seconds()
+        deltas = deltas[deltas > 0]
+        if deltas.empty:
+            return None
+        return float(deltas.median())
+
+    def _build_dataset(
+        self, df: pd.DataFrame, detected_sampling_time: Optional[float] = None,
+    ) -> IODataset:
         """Extract I/O arrays from cleaned DataFrame and split."""
         in_cols  = [c for c in INPUT_COLS  if c in df.columns]
         out_cols = [c for c in OUTPUT_COLS if c in df.columns]
@@ -290,7 +307,10 @@ class DataManager:
         U_all = df[in_cols].values.astype(float)
         Y_all = df[out_cols].values.astype(float)
 
-        return self._scale_and_split(U_all, Y_all, in_cols, out_cols)
+        return self._scale_and_split(
+            U_all, Y_all, in_cols, out_cols,
+            detected_sampling_time=detected_sampling_time,
+        )
 
     def _scale_and_split(
         self,
@@ -298,6 +318,7 @@ class DataManager:
         Y_all: np.ndarray,
         input_cols: List[str],
         output_cols: List[str],
+        detected_sampling_time: Optional[float] = None,
     ) -> IODataset:
         """Scale with RobustScaler and perform chronological split."""
         n_tr = int(len(U_all) * self._cfg.train_fraction)
@@ -317,6 +338,7 @@ class DataManager:
             output_cols=output_cols,
             scaler_u=self._scaler_u,
             scaler_y=self._scaler_y,
+            detected_sampling_time=detected_sampling_time,
         )
         logger.info("Dataset ready: %r", dataset)
         return dataset

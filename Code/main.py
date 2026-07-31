@@ -29,6 +29,27 @@ Both default to "try load from disk; if missing, build fresh and save
 for next time". Use ``--optimise_model`` / ``--optimise_weights`` to
 force a fresh build even when a cache is present.
 
+Accuracy gate
+-------------
+Every output must individually reach ``AccuracyConfig.min_r2``
+(worst-case R², default 0.95) — once right after N4SID identification
+(on training data) and again after the full reduction pipeline (on
+held-out test data). A cached model is re-checked against the same
+gate before it's trusted. On failure the corresponding model order is
+escalated and retried, up to ``max_n_states`` / ``max_n_states_bt``;
+if that ceiling is exhausted a ``ModelAccuracyError`` halts the
+pipeline. Disable via --no_accuracy_gate; tune via --min_r2,
+--max_n_states, --max_n_states_bt.
+
+Sampling time
+-------------
+For real data, ``Ts`` defaults to the median interval between
+consecutive timestamps in the data file, not a fixed constant — this
+avoids a mismatch between the identified model's discrete-time step
+and the physical clock (which would silently distort the MPC horizon
+duration, ITAE scaling, and report timings). Pass --Ts to override;
+a mismatch against the detected value then only produces a warning.
+
 Usage
 -----
     # With real data:
@@ -49,6 +70,7 @@ Author : Blown Film MPC Project
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import logging
 import os
 import sys
@@ -71,7 +93,9 @@ for _stream_name in ("stdout", "stderr"):
 import numpy as np
 
 # ── Project modules ──────────────────────────────────────────────────────────
+from accuracy import AccuracyResult, ModelAccuracyError, evaluate_accuracy
 from config import (
+    AccuracyConfig,
     DataConfig,
     IdentificationConfig,
     KalmanConfig,
@@ -121,6 +145,9 @@ class BlownFilmPipeline:
     controller_path : path to load/save the cached MPC weights
     force_new_model : ignore any cached model and identify/reduce a
                       fresh one (see --optimise_model)
+    ts_explicit     : whether the sampling time was explicitly passed
+                      via --Ts (disables auto-detection from real-data
+                      timestamps, other than a mismatch warning)
     """
 
     def __init__(
@@ -132,6 +159,7 @@ class BlownFilmPipeline:
         model_path: str = os.path.join("saved", "reduced_model.pkl"),
         controller_path: str = os.path.join("saved", "mpc_weights.pkl"),
         force_new_model: bool = False,
+        ts_explicit: bool = False,
     ) -> None:
         self._cfg        = cfg
         self._data_path  = data_path
@@ -140,6 +168,7 @@ class BlownFilmPipeline:
         self._model_path      = model_path
         self._controller_path = controller_path
         self._force_new_model = force_new_model
+        self._ts_explicit     = ts_explicit
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -184,6 +213,8 @@ class BlownFilmPipeline:
             logger.info("No data file provided — using synthetic data.")
             self._dataset = dm.prepare_synthetic()
 
+        self._reconcile_sampling_time()
+
         ds = self._dataset
         self._report.add_section(
             "1. Data Summary",
@@ -195,6 +226,40 @@ class BlownFilmPipeline:
             f"Sampling time : {self._cfg.data.sampling_time} s",
         )
 
+    def _reconcile_sampling_time(self) -> None:
+        """
+        Reconcile the configured sampling time against the interval
+        detected from real-data timestamps (``IODataset.detected_sampling_time``).
+
+        If ``--Ts`` was not explicitly passed, the detected value is
+        adopted automatically. If it was explicitly passed, a mismatch
+        only triggers a warning — the user's choice is respected.
+        """
+        detected = self._dataset.detected_sampling_time
+        if detected is None:
+            return
+
+        configured = self._cfg.data.sampling_time
+        rel_diff = abs(detected - configured) / configured
+
+        if not self._ts_explicit:
+            if rel_diff > 0.01:
+                logger.info(
+                    "Auto-detected sampling time %.3gs from data timestamps "
+                    "(overriding default %.3gs). Pass --Ts to override.",
+                    detected, configured,
+                )
+                self._cfg = replace(
+                    self._cfg, data=replace(self._cfg.data, sampling_time=detected)
+                )
+        elif rel_diff > 0.05:
+            logger.warning(
+                "Configured --Ts=%.3gs differs from the %.3gs interval "
+                "detected in the data timestamps; using the configured "
+                "value as requested.",
+                configured, detected,
+            )
+
     # ------------------------------------------------------------------
     def _stage_model(self) -> None:
         """
@@ -203,7 +268,8 @@ class BlownFilmPipeline:
         reduction fresh (and caching the result for next time).
 
         A fresh build is forced when ``self._force_new_model`` is set
-        (--optimise_model) or when no valid cache is found.
+        (--optimise_model), when no valid cache is found, or when a
+        cached model fails the accuracy gate (see ``AccuracyConfig``).
         """
         logger.info("━━━ STAGE 2-3: Model (Identification + Reduction) ━━━")
 
@@ -217,76 +283,191 @@ class BlownFilmPipeline:
             )
 
         if cached is not None:
-            self._reduced = cached
-            self._report.add_section(
-                "2-3. Model (Identification + Reduction)",
-                f"Loaded cached model from : {self._model_path}\n"
-                f"{self._reduced!r}",
+            check = self._check_reduction_accuracy(cached)
+            logger.info(check.summary())
+            if check.passed or not self._cfg.accuracy.enabled:
+                self._reduced = cached
+                self._report.add_section(
+                    "2-3. Model (Identification + Reduction)",
+                    f"Loaded cached model from : {self._model_path}\n"
+                    f"{self._reduced!r}\n"
+                    f"Accuracy gate            : {check.summary()}",
+                )
+                return
+            logger.warning(
+                "Cached model at %s fails the accuracy gate — "
+                "rebuilding from scratch (%s).",
+                self._model_path, check.summary(),
             )
-            return
 
         self._stage_identification()
         self._stage_reduction()
         ModelStore.save(self._reduced, self._model_path)
 
     # ------------------------------------------------------------------
-    def _stage_identification(self) -> None:
-        logger.info("━━━ STAGE 2: System Identification ━━━")
-        ds  = self._dataset
-        cfg = self._cfg.identification
-
-        identifier = SubspaceIdentifier(cfg=cfg, Ts=self._cfg.data.sampling_time)
-        identifier.fit(ds.U_train, ds.Y_train)
-
-        self._plotter.plot_singular_values(
-            sv=identifier.singular_values,
-            selected_order=cfg.n_states,
+    def _check_reduction_accuracy(self, reduced: ReducedModel) -> AccuracyResult:
+        """Evaluate a (candidate) reduced model against held-out test data."""
+        ds        = self._dataset
+        validator = ModelValidator(reduced_model=reduced, output_names=ds.output_cols)
+        Y_pred    = validator.predict(ds.U_test)
+        return evaluate_accuracy(
+            ds.Y_test, Y_pred, ds.output_cols,
+            stage="post-reduction",
+            threshold=self._cfg.accuracy.min_r2,
+            n_states=reduced.n_states,
         )
 
-        model = identifier.model
+    # ------------------------------------------------------------------
+    def _stage_identification(self) -> None:
+        """
+        Run N4SID (+ optional parameter refinement). If the accuracy
+        gate is enabled, escalate ``n_states`` and retry until every
+        output's training R² clears ``AccuracyConfig.min_r2``, up to
+        ``max_n_states``.
+        """
+        logger.info("━━━ STAGE 2: System Identification ━━━")
+        ds      = self._dataset
+        id_cfg  = self._cfg.identification
+        acc_cfg = self._cfg.accuracy
 
-        if cfg.optimise_params:
-            optimiser = ParameterOptimiser(model=model, cfg=cfg)
-            model     = optimiser.optimise(ds.U_train, ds.Y_train)
+        n          = id_cfg.n_states
+        prev_n: int | None = None
+        identifier: SubspaceIdentifier | None = None
+        model: StateSpaceModel | None = None
+        check: AccuracyResult | None = None
+
+        while True:
+            attempt_cfg = replace(id_cfg, n_states=n)
+            identifier  = SubspaceIdentifier(
+                cfg=attempt_cfg, Ts=self._cfg.data.sampling_time
+            )
+            identifier.fit(ds.U_train, ds.Y_train)
+            model = identifier.model
+
+            if attempt_cfg.optimise_params:
+                model = ParameterOptimiser(
+                    model=model, cfg=attempt_cfg
+                ).optimise(ds.U_train, ds.Y_train)
+
+            check = evaluate_accuracy(
+                ds.Y_train, model.simulate(ds.U_train), ds.output_cols,
+                stage="post-identification",
+                threshold=acc_cfg.min_r2,
+                n_states=model.n_states,
+            )
+            logger.info(check.summary())
+
+            if not acc_cfg.enabled or check.passed:
+                break
+            if model.n_states >= acc_cfg.max_n_states or model.n_states == prev_n:
+                raise ModelAccuracyError(
+                    "System identification could not reach the required "
+                    f"accuracy (worst-case R²={check.worst_r2:.4f} on output "
+                    f"{check.worst_output!r}, need >={acc_cfg.min_r2:.4f}) "
+                    f"even at n_states={model.n_states} "
+                    f"(cap max_n_states={acc_cfg.max_n_states}). Consider "
+                    "richer/faster excitation data, raising --max_n_states, "
+                    "or increasing n_block_rows in IdentificationConfig."
+                )
+            prev_n = model.n_states
+            n      = min(model.n_states + acc_cfg.n_states_step, acc_cfg.max_n_states)
+            logger.warning(
+                "Accuracy gate failed post-identification — escalating "
+                "n_states to %d and retrying.", n,
+            )
 
         self._ss_model = model
 
-        y_hat = model.simulate(ds.U_train)
-        from sklearn.metrics import r2_score
-        r2_tr = float(r2_score(ds.Y_train, y_hat))
+        self._plotter.plot_singular_values(
+            sv=identifier.singular_values,
+            selected_order=model.n_states,
+        )
 
+        avg_r2 = float(np.mean(check.per_output_r2))
         logger.info("Identified model: %r", model)
         self._report.add_section(
             "2. System Identification (N4SID)",
-            f"Model order   : {model.n_states}\n"
-            f"Stable        : {model.is_stable}\n"
-            f"Spectral rho  : {model.spectral_radius:.4f}\n"
-            f"Training R²   : {r2_tr:.4f}\n"
-            f"Param opt     : {cfg.optimise_params}",
+            f"Model order       : {model.n_states}\n"
+            f"Stable            : {model.is_stable}\n"
+            f"Spectral rho      : {model.spectral_radius:.4f}\n"
+            f"Training R² (avg) : {avg_r2:.4f}\n"
+            f"Param opt         : {id_cfg.optimise_params}\n"
+            f"Accuracy gate     : {check.summary()}",
         )
 
     # ------------------------------------------------------------------
     def _stage_reduction(self) -> None:
+        """
+        Run balanced truncation + POD/Galerkin reduction. If the
+        accuracy gate is enabled, escalate ``n_states_bt`` and retry
+        until every output's test R² clears ``AccuracyConfig.min_r2``,
+        up to ``max_n_states_bt`` (and the full model order).
+        """
         logger.info("━━━ STAGE 3: Model Order Reduction ━━━")
-        reducer = ModelReducer(
-            cfg=self._cfg.reduction,
-            Ts=self._cfg.data.sampling_time,
-        )
-        self._reduced = reducer.reduce(self._ss_model)
+        red_cfg = self._cfg.reduction
+        acc_cfg = self._cfg.accuracy
+
+        n_bt = red_cfg.n_states_bt
+        prev_n: int | None = None
+        reduced: ReducedModel | None = None
+        check: AccuracyResult | None = None
+
+        while True:
+            attempt_cfg = replace(red_cfg, n_states_bt=n_bt)
+            reducer     = ModelReducer(
+                cfg=attempt_cfg, Ts=self._cfg.data.sampling_time
+            )
+            reduced = reducer.reduce(self._ss_model)
+
+            check = self._check_reduction_accuracy(reduced)
+            logger.info(check.summary())
+
+            if not acc_cfg.enabled or check.passed:
+                break
+            if (
+                reduced.n_states >= acc_cfg.max_n_states_bt
+                or reduced.n_states >= self._ss_model.n_states - 1
+                or reduced.n_states == prev_n
+            ):
+                raise ModelAccuracyError(
+                    "Model order reduction could not retain the required "
+                    f"accuracy (worst-case test R²={check.worst_r2:.4f} on "
+                    f"output {check.worst_output!r}, need "
+                    f">={acc_cfg.min_r2:.4f}) even at reduced order="
+                    f"{reduced.n_states} (full order="
+                    f"{self._ss_model.n_states}, cap max_n_states_bt="
+                    f"{acc_cfg.max_n_states_bt}). The full-order model "
+                    "already passed this threshold on training data, so "
+                    "consider: raising --n_id / --max_n_states further, "
+                    "checking for train/test overfitting, or raising "
+                    "pod_energy_tolerance."
+                )
+            prev_n = reduced.n_states
+            n_bt   = min(
+                reduced.n_states + acc_cfg.n_states_bt_step,
+                acc_cfg.max_n_states_bt,
+            )
+            logger.warning(
+                "Accuracy gate failed post-reduction — escalating "
+                "n_states_bt to %d and retrying.", n_bt,
+            )
+
+        self._reduced = reduced
 
         self._plotter.plot_hsv(
-            hsv=self._reduced.hsv,
-            truncation_order=self._reduced.n_states,
+            hsv=reduced.hsv,
+            truncation_order=reduced.n_states,
         )
 
         self._report.add_section(
             "3. Model Order Reduction",
             f"Full order    : {self._ss_model.n_states}\n"
-            f"Reduced order : {self._reduced.n_states}\n"
-            f"Augmented dim : {self._reduced.n_aug}\n"
+            f"Reduced order : {reduced.n_states}\n"
+            f"Augmented dim : {reduced.n_aug}\n"
             f"Reduction     : "
-            f"{(1 - self._reduced.n_states / self._ss_model.n_states) * 100:.1f}%\n"
-            f"Ts            : {self._reduced.Ts} s",
+            f"{(1 - reduced.n_states / self._ss_model.n_states) * 100:.1f}%\n"
+            f"Ts            : {reduced.Ts} s\n"
+            f"Accuracy gate : {check.summary()}",
         )
 
     # ------------------------------------------------------------------
@@ -484,8 +665,29 @@ def _parse_args() -> argparse.Namespace:
         help="Target order after balanced truncation",
     )
     parser.add_argument(
-        "--Ts", type=float, default=3.0,
-        help="Sampling time in seconds",
+        "--min_r2", type=float, default=0.95,
+        help="Required worst-case per-output R² (accuracy gate)",
+    )
+    parser.add_argument(
+        "--max_n_states", type=int, default=60,
+        help="Ceiling for automatic N4SID order escalation on gate failure",
+    )
+    parser.add_argument(
+        "--max_n_states_bt", type=int, default=50,
+        help="Ceiling for automatic reduction-order escalation on gate failure",
+    )
+    parser.add_argument(
+        "--no_accuracy_gate", action="store_true",
+        help="Disable the minimum-accuracy gate entirely (debugging only)",
+    )
+    parser.add_argument(
+        "--Ts", type=float, default=None,
+        help=(
+            "Sampling time in seconds. Default: auto-detected from the "
+            "data timestamps for real data (falls back to 3.0s if that "
+            "fails), or 3.0s for synthetic data. Passing this explicitly "
+            "overrides auto-detection."
+        ),
     )
     parser.add_argument(
         "--Np", type=int, default=20,
@@ -541,12 +743,18 @@ def main() -> None:
     args = _parse_args()
 
     cfg = ProjectConfig(
-        data=DataConfig(sampling_time=args.Ts),
+        data=DataConfig(sampling_time=args.Ts if args.Ts is not None else 3.0),
         identification=IdentificationConfig(
             n_states=args.n_id,
             optimise_params=not args.no_param_opt,
         ),
         reduction=ReductionConfig(n_states_bt=args.n_red),
+        accuracy=AccuracyConfig(
+            min_r2=args.min_r2,
+            enabled=not args.no_accuracy_gate,
+            max_n_states=args.max_n_states,
+            max_n_states_bt=args.max_n_states_bt,
+        ),
         kalman=KalmanConfig(),
         mpc=MPCConfig(
             prediction_horizon=args.Np,
@@ -565,8 +773,14 @@ def main() -> None:
         model_path=args.model_path,
         controller_path=args.controller_path,
         force_new_model=args.optimise_model,
+        ts_explicit=args.Ts is not None,
     )
-    pipeline.run()
+
+    try:
+        pipeline.run()
+    except ModelAccuracyError as exc:
+        logger.error("Accuracy gate failed — pipeline halted.\n%s", exc)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
