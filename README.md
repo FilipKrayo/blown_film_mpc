@@ -268,8 +268,7 @@ winding the collapsed film onto rolls.
 | **Disturbances** | Material bulk density, dosing proportions, blower load |
 
 ---
-
-## 📐 Mathematical Background
+## Mathematical Background
 ---
 
 ## 📐 Original PDE/ODE System Model
