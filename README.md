@@ -15,7 +15,6 @@
 ## 📋 Table of Contents
 
 - [Overview](#-overview)
-- [Recent Changes](#-recent-changes)
 - [System Description](#-system-description)
   - [Monitored Stations](#monitored-stations)
   - [Key Process Variables](#key-process-variables)
@@ -77,14 +76,13 @@
 
 ---
 
-## 🔍 Overview
-
 This repository implements a complete **data-driven control engineering
 pipeline** for an industrial co-extrusion blown film manufacturing line.
 Starting from raw SCADA/PLC time-series data, the pipeline:
 
 1. **Identifies** a discrete-time linear state space model from
-   input-output data using the **N4SID subspace algorithm**.
+   input-output data using either the **N4SID subspace algorithm** (black-box)
+   or **grey-box linearisation** (physics-based).
 2. **Reduces** the model order via **Balanced Truncation** and
    **POD/Galerkin projection** to make it suitable for real-time
    optimisation.
@@ -100,217 +98,6 @@ Starting from raw SCADA/PLC time-series data, the pipeline:
 
 The entire codebase is written in **object-oriented Python** following
 PEP 8, SOLID principles, and modern type-annotation standards.
-
----
-
-## 🔄 Recent Changes
-
-### Linear Grey-Box Identification via Direct Matrix Optimization (Latest)
-
-**Paradigm shift:** Replaced the 18-parameter-group multiplicative scale-
-factor search with **single-pass linearisation** + **balanced-truncation
-reduction** + **direct A/B/C matrix optimization** against real (U, Y) data.
-
-**Problem with the previous approach:**
-- Optimising 18 multiplicative scales requires repeated full nonlinear
-  solves (operating-point Newton + linearisation) for every candidate,
-  each landing at a nominally-computed operating point arbitrarily far
-  from the real data's actual regime (e.g., the model's nominal
-  `sigma_web_set` was 500–3000× smaller than real-data deviations,
-  putting the linearisation nowhere near where it needed to be valid).
-- Slow convergence and high parameter drift.
-
-**New approach:**
-
-1. **Single linearisation at real-data mean operating point** (grey_box.py):
-   - Compute `u0 = U.mean(axis=0)` (real dataset's actual mean input).
-   - Solve operating point `x0` ONCE at this u0 (not at nominal).
-   - Linearise `(A_c, B_c, C_c, D_c)` and discretise once to get `A_d, B_d, C_d, D_d`.
-   - This ensures the linearised model is valid in the region where the
-     real data actually lives.
-
-2. **Balanced truncation reduction** (grey_box.py):
-   - Reduce full-order `(A_d, B_d, C_d, D_d)` to `cfg.grey_box_reduced_order`
-     states (default: 10) via Hankel-singular-value truncation.
-   - Uses controlled Lyapunov equations for controllability/observability
-     Gramians (mirroring `model_reduction.py`'s existing pipeline).
-   - Gramians computed from a stabilised copy of `A` (for numerical
-     well-posedness) but transform applied to actual (unstabilised) model
-     so reduced model retains real open-loop dynamics.
-   - Typical HSV "knee" around r=5, capturing ~88% energy; r=10 keeps
-     safety margin.
-
-3. **Direct matrix optimisation** (grey_box.py):
-   - Optimise reduced `A_r` (r×r), `B_r` (r × live inputs), and `C_r`
-     (outputs × r) matrices directly via L-BFGS-B against (U, Y).
-   - `D_r` fixed at its linearised value (state-order-independent).
-   - Much smaller search space (≤ r² + r·n_live + p·r parameters,
-     typically 50–100 vs. 18 groups) with direct gradient signal.
-
-4. **Live input filtering** (grey_box.py):
-   - Identify inputs whose deviation `U - u0` is zero (or near-zero) for
-     the entire training set — these carry no signal and waste parameters.
-   - Exclude their B-matrix columns from optimisation.
-   - Log the count of live vs. total inputs for diagnostics.
-
-5. **Tension control feedback** (physical_model.py):
-   - Added `Kp_tension` parameter (real winders adjust drive torque to
-     hold web tension at setpoint via closed-loop feedback, not open-loop
-     profile).
-   - Corrected `T_drive_dot` dynamics to include tension feedback:
-     `T_drive_dot = (T_drive_set + Kp_tension·h·width·R·(σ_set - σ) - T_drive) / τ`.
-   - This creates a path for `sigma_web_set` input into the state dynamics
-     (previously a dead input).
-
-6. **Reporting improvements** (main.py):
-   - Report reduced model order and count of live inputs in grey-box
-     summary.
-
-**Impact:**
-- Linearisation now targets the real data's operating region, not a
-  potentially-unrelated nominal point → better fit quality.
-- Smaller, more direct parameter search with real gradient signal →
-  faster convergence, fewer evaluations.
-- Eliminated 18 multiplicative scales; replaced with single linearisation
-  + direct matrix tweaks, conceptually simpler and more interpretable.
-- Winder tension control now properly coupled to state dynamics.
-
----
-
-### Stabilized Grey-Box Identification: Windowed Simulation & Zero-Variance Exclusion
-
-**Problem:** The bubble/haul-off subsystem is structurally **open-loop
-unstable** (spectral radius ~1e11 for nominal parameters). When simulating
-the linearised discrete-time model `A_d` in one continuous open-loop rollout
-across 113k+ real-data training samples (157 days), the state diverges
-exponentially within a handful of steps regardless of parameter scales,
-collapsing all candidates to a flat cost landscape (1.0e8) and breaking
-gradient-based optimization.
-
-**Root causes:**
-
-1. **Unbounded integrator divergence:** Slow-integrator states (winder roll
-   build-up R_roll, remaining length L_rem) and momentum-like states
-   (film axial velocity v_z) in the real blown-film process are
-   periodically reset by physical events (roll changes, operator actions)
-   that the model has no mechanism for. Simulating open-loop for 157 days
-   lets these states grow unbounded regardless of A_d's clamped stability.
-
-2. **Zero-variance pathological outputs:** Some SCADA columns carry no
-   fittable signal (e.g. disconnected sensors reading a constant 0 or
-   NaN). Using their near-zero variance as a divisor in the cost (`(Y - Ŷ)²
-   / σ²`) turns tiny prediction errors into spurious, enormous cost
-   contributions unrelated to fit quality.
-
-**Fixes implemented:**
-
-1. **Windowed simulation** (grey_box.py, main.py):
-   - Simulate in short, non-overlapping windows (default: `horizon_seconds /
-     Ts` steps, matching MPC prediction horizon).
-   - Reset state to deviation-zero equilibrium at window boundaries instead
-     of carrying diverged state across the full 157-day trajectory.
-   - Added `GreyBoxIdentifier.simulate_windowed()` static method for
-     consistent windowing across fitting and validation.
-   - Mirrors real MPC deployment (prediction-horizon reset at each step).
-
-2. **Stabilization of open-loop unstable A_d** (grey_box.py):
-   - Before windowed simulation, clamp eigenvalues to `|λ| ≤ 0.98` if
-     spectral radius exceeds 0.98 (via `stabilise_discrete_matrix()`).
-   - Stability penalty still discourages need for clamping in the final
-     result.
-   - Optimization now receives real, gradient-rich MSE signal instead of
-     flat 1.0e8 divergence floor.
-
-3. **Zero-variance output exclusion** (grey_box.py, main.py):
-   - Identify real SCADA output columns with variance < 1e-9 (disconnected
-     sensors, uninitialized tags).
-   - Exclude them entirely from both cost computation and accuracy metrics.
-   - Log excluded columns with indices for diagnostic clarity.
-   - Apply same exclusion mask to validation pipeline (`evaluate_accuracy()`).
-
-4. **Deviation-form dynamics handling** (grey_box.py, main.py):
-   - Clarified that linearised `A_d`, `B_d`, `C_d`, `D_d` matrices describe
-     **deviation** dynamics (`dx' = Ax' + Bu'`, `y' = Cx' + Du'`) around
-     operating point `(x0, u0)`, not absolute physical quantities.
-   - Exposed `last_x0`, `last_u0`, `last_y0` from `GreyBoxIdentifier` after
-     fitting.
-   - In cost computation: simulate with `U_dev = U - u0`, add `y0` back to
-     recover absolute predictions before comparison.
-   - In validation: unscale training data (invert `RobustScaler`) to recover
-     raw engineering units before fitting and comparison.
-
-5. **.gitignore update**:
-   - Added `*.txt` and `*.log` to ignore output/diagnostic files.
-
-**Impact:**
-- Optimization converges with stable, non-flat gradient signal (MSE << 1e8
-  instead of clipped at 1e8).
-- Fitted parameters remain physically realizable (validated against the
-  model's open-loop instability tendency).
-- Improved fit quality by suppressing pathological zero-variance outputs.
-- Consistent deviation-form interpretation across fitting, validation, and
-  downstream deployment.
-
----
-
-### Grey-Box Identification & Real-Data Unit Conversions
-
-**Problem:** Grey-box identification on real SCADA data resulted in
-catastrophic misfit due to two undetected issues:
-
-1. **Missing unit conversions:** Real SCADA signals and the physical
-   model use incompatible units. Real data records temperature in °C
-   (model uses K), pressure in bar (Pa), IBC/blower commands in 0–100%
-   (rpm), haul-off speed in m/min (m/s), and winder tension in N
-   (model's σ_web is Pa stress). Comparing raw values without conversion
-   left residuals >10⁵ in magnitude, overwhelming the least-squares fit.
-
-2. **Operating-point solver divergence:** The physical model's
-   steady-state computation (`nominal_state_guess()`) used hardcoded
-   initial guesses (P_bub = 300 Pa, v_z from mass-balance formula,
-   T_f = 313.15 K) that violated the system's equilibrium conditions.
-   This left residuals in the Newton–Raphson root-solve on the order
-   of 1e3–1e5, causing it to diverge wildly (>1e10×) even from an
-   otherwise reasonable guess, especially when pure integrators
-   (L_job, L_w, m_dos) made the Jacobian structurally singular.
-
-**Fixes implemented:**
-
-1. **Bidirectional unit conversion** in `grey_box.py`:
-   - Added `map_real_inputs_to_model()` to convert real SCADA inputs to
-     model SI/native units (°C→K, bar→Pa, 0–100%→rpm, m/min→m/s, N→Pa).
-   - Added `map_model_outputs_to_real()` to convert model outputs back
-     to real-SCADA order and units for validation.
-   - Normalized per-output cost by variance to prevent large-magnitude
-     units (Pa, bar) from dominating the optimization.
-   - Store `last_physical_model` and `last_real_data_mode` flags in
-     `GreyBoxIdentifier` so callers can convert predictions back.
-
-2. **Physical model equilibrium fixes** in `physical_model.py`:
-   - **Die actuator droop:** T_sp_die now offsets by u_die_eq/Kp_die
-     to satisfy steady-state proportional-actuator dynamics.
-   - **Bubble pressure:** P_bub_nom calculated from IBC mass-balance
-     equilibrium instead of hardcoded 300 Pa.
-   - **Film velocity:** v_z_nom = v_haul_nom (not independent
-     mass-balance formula) to satisfy stress equation equilibrium.
-   - **Die state:** u_die initial value matches T_sp_die offset.
-   - **Film temperature:** T_f calculated as weighted average of T_amb
-     and T_ibc (thermal balance condition).
-   - **Integrator exclusion:** L_job, L_w, m_dos excluded from
-     root-solve (pure integrators → no equilibrium) and held at
-     initial guess instead.
-
-3. **Validation in** `main.py`:
-   - `evaluate_accuracy()` now applies `map_model_outputs_to_real()`
-     before comparing model predictions against real training data.
-   - Updated `--n_id` and `--max_n_states` defaults to reflect new
-     baseline model order (146 states).
-
-**Impact:** Real-data grey-box identification now achieves stable
-convergence with residuals <1.0 and produces physically meaningful
-fitted parameters. Misfit on real production data is now dominated by
-model structure / parameterization error rather than numerical
-divergence or unit mismatches.
 
 ---
 
@@ -343,161 +130,44 @@ winding the collapsed film onto rolls.
 ## Mathematical Background
 ---
 
-## 📐 Original PDE/ODE System Model
+## � Underlying Physical Model
 
-Before data-driven system identification is applied, the blown film
-line is described by a **first-principles mathematical model** derived
-from conservation laws, constitutive relations, and empirical
-correlations. This section documents the full physics-based model that
-motivates the state space structure used in the identification and
-MPC pipeline.
+The blown-film line is described by a **first-principles distributed-
+parameter model** with 146 states spanning extruders, dosing, die head,
+bubble dynamics, cooling, haul-off, and winder subsystems. This model
+is used for **grey-box identification** (optional) — an alternative to
+the pure data-driven N4SID approach.
 
-The model spans **nine coupled physical domains**, each contributing
-states to the full-order system of dimension $`n_x = 146`$.
+For grey-box identification, the model is:
+1. **Linearised** around a steady-state operating point (computed from
+   real-data mean inputs).
+2. **Reduced** to ~10 states via balanced truncation.
+3. **Optimised** via L-BFGS-B to fit input-output data (state-space
+   matrices A/B/C).
+
+The **N4SID identification method** bypasses the physical model entirely,
+identifying the state-space matrices purely from data. This is the
+default identification method and is more robust to real-world plant
+mismatches.
+
+Both identification methods produce a **discrete-time linear state-space
+model** suitable for MPC design:
+
+```math
+x_{k+1} = A\,x_k + B\,u_k
+```
+
+```math
+y_k = C\,x_k + D\,u_k
+```
+
+This is reduced further via balanced truncation (HSV-based) and POD/
+Galerkin projection to ~12–25 states, then augmented with disturbance
+states for offset-free MPC.
 
 ---
 
-### 1. Extruder Dynamics
-
-#### 1.1 Melt Flow Rate
-
-The volumetric throughput of extruder $`k`$ is governed by the
-classical drag-pressure flow decomposition for a single-screw
-extruder:
-
-```math
-Q_k = \alpha_k N_k - \beta_k \frac{\Delta P_k}{\mu_k(T_k,\,\dot{\gamma}_k)}
-```
-
-| Symbol | Description | Unit |
-|--------|-------------|------|
-| $`Q_k`$ | Volumetric flow rate | m³/s |
-| $`\alpha_k`$ | Drag flow coefficient (screw geometry) | m³/rev |
-| $`N_k`$ | Screw rotational speed | rpm |
-| $`\beta_k`$ | Pressure flow coefficient | m³·s/kg |
-| $`\Delta P_k`$ | Pressure drop across screw | Pa |
-| $`\mu_k`$ | Non-Newtonian melt viscosity | Pa·s |
-
-#### 1.2 Non-Newtonian Viscosity
-
-The melt follows a **power-law (Ostwald–de Waele)** model with
-Arrhenius temperature dependence:
-
-```math
-\mu_k(T_k,\,\dot{\gamma}_k)
-= m_k(T_k)\cdot\dot{\gamma}_k^{\,n_k - 1}
-```
-
-```math
-m_k(T_k)
-= m_{0,k}\exp\!\left(\frac{E_{a,k}}{R\,T_k}\right)
-```
-
-| Symbol | Description | Unit |
-|--------|-------------|------|
-| $`\dot{\gamma}_k`$ | Shear rate | s⁻¹ |
-| $`n_k`$ | Power-law index | — |
-| $`m_{0,k}`$ | Reference consistency index | Pa·sⁿ |
-| $`E_{a,k}`$ | Flow activation energy | J/mol |
-| $`R`$ | Universal gas constant | J/(mol·K) |
-
-#### 1.3 Melt Pressure ODE
-
-```math
-\frac{dP_k}{dt}
-= \frac{K_k}{\rho_k}
-\bigl(\dot{m}_{in,k} - \dot{m}_{out,k}\bigr)
-```
-
-where $`K_k`$ is the bulk modulus of the polymer melt.
-
-#### 1.4 Barrel Energy Balance PDE
-
-The temperature field along the screw axis $`z`$ evolves according
-to the **convection–diffusion–reaction** equation:
-
-```math
-\rho_k c_{p,k}
-\frac{\partial T_k}{\partial t} +
-\rho_k c_{p,k}\,v_{z,k}
-\frac{\partial T_k}{\partial z}
-= \lambda_k
-\frac{\partial^2 T_k}{\partial z^2} +
-\underbrace{\eta_k\,\dot{\gamma}_k^2}_{\text{viscous dissipation}} +
-\underbrace{\dot{q}_{wall,k}(z,t)}_{\text{barrel heating}}
-```
-
-| Symbol | Description | Unit |
-|--------|-------------|------|
-| $`v_{z,k}`$ | Axial melt velocity | m/s |
-| $`\lambda_k`$ | Melt thermal conductivity | W/(m·K) |
-| $`\eta_k\dot{\gamma}_k^2`$ | Viscous dissipation (→ `DissipationPwr`) | W/m³ |
-| $`\dot{q}_{wall,k}`$ | Wall heat flux from barrel zones | W/m³ |
-
-#### 1.5 Barrel Zone Heat Flux
-
-Each of the $`j = 1,\ldots,8`$ heating zones contributes:
-
-```math
-\dot{q}_{wall,k,j}
-= h_{k,j}\,A_{k,j}
-\bigl(T_{sp,k,j} - T_k(z_j,t)\bigr)
-\cdot P_{eff,k,j}(t)
-```
-
-```math
-\frac{dT_{set,k,j}}{dt}
-= \frac{1}{\tau_{k,j}}
-\bigl(T_{sp,k,j} - T_{set,k,j}\bigr) -
-K_{P,k,j}\,e_{k,j}(t)
-```
-
-where $`e_{k,j} = T_{set,k,j} - T_{act,k,j}`$ is the zone PID
-error signal (mapped from SCADA tags `Regler_X`, `Regler_Y`,
-`ActEffectPower`).
-
----
-
-### 2. Dosing / Feeder Dynamics
-
-For component $`i`$ in extruder $`k`$ (up to 5 components per
-extruder, mapped from `Dos_2` through `Dos_5`):
-
-#### 2.1 Component Mass Balance
-
-```math
-\frac{dm_{i,k}}{dt}
-= \dot{m}_{feed,i,k} -
-\rho_{bulk,i,k}\,Q_{dos,i,k}(N_{dos,i,k})
-```
-
-#### 2.2 Actual Proportion
-
-```math
-\phi_{i,k}(t)
-= \frac{\dot{m}_{out,i,k}}
-       {\displaystyle\sum_{i=1}^{n}\dot{m}_{out,i,k}}
-```
-
-→ `Dos_i_IstAnteil`
-
-#### 2.3 PI Dosing Control Law
-
-```math
-\frac{dN_{dos,i,k}}{dt}
-= K_{c,i,k}
-\bigl(\phi_{i,k}^{set} - \phi_{i,k}\bigr) +
-\frac{K_{c,i,k}}{\tau_{I,i,k}}
-\int_0^t
-\bigl(\phi_{i,k}^{set} - \phi_{i,k}\bigr)\,d\tau
-```
-
-#### 2.4 Mix Density
-
-```math
-\rho_{mix,k}(t)
-= \sum_{i=1}^{n}
-\phi_{i,k}(t)\cdot\rho_{bulk,i,k}
+## 📐 Mathematical Background
 ```
 
 → `MischDicht`
