@@ -33,7 +33,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 from scipy.optimize import minimize
 
-from config import INPUT_COLS, PhysicalModelConfig
+from config import INPUT_COLS, OUTPUT_COLS, PhysicalModelConfig
 from physical_model import (
     FirstPrinciplesModel,
     PhysicalParameters,
@@ -43,6 +43,29 @@ from physical_model import (
 from system_identification import StateSpaceModel
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Real-data <-> model unit conversions
+# ---------------------------------------------------------------------------
+# Per extrusion_data_legend.xlsx: temperature setpoints/actuals are °C (model
+# uses Kelvin), extruder pressure is bar (model uses Pa), IBC/blower signals
+# and one winder-drive signal are a 0-100% of full scale (model uses physical
+# rpm/torque-like units), haul-off speed is m/min (model uses m/s), and
+# winder tension is N (model's "sigma_web" is a stress in Pa, related to
+# tension by force = stress * film_thickness * film_width — the same relation
+# already used internally, see dynamics()'s `sigma_web * h_film * film_width`
+# term). Comparing raw values without these conversions was the dominant
+# source of the grey-box fit's catastrophic misfit on real data.
+_DEG_C_TO_K = 273.15
+_BAR_TO_PA = 1.0e5
+_IBC_PCT_FULL_SCALE = 1200.0   # rpm treated as the blower's "100%" (matches nominal_inputs' N_ibc_set)
+
+
+def _tension_force_per_stress(model: FirstPrinciplesModel) -> float:
+    """film_thickness(nominal) * film_width: converts a web stress [Pa] to a tension force [N]."""
+    h_film_ref = float(model.nominal_state_guess()[model.sl_h_film][0])
+    return h_film_ref * model.params.film_width
 
 
 # ---------------------------------------------------------------------------
@@ -64,11 +87,13 @@ _REAL_WINDER_TENS_IDX = [23, 25]                 # ST113/ST114 VARWdSpTens
 def map_real_inputs_to_model(U_real: np.ndarray, model: FirstPrinciplesModel) -> np.ndarray:
     """
     Map real SCADA input columns (``config.INPUT_COLS`` order) onto the
-    ``FirstPrinciplesModel`` input vector. Real signals without a direct
-    physical-model counterpart (dosing feed/proportion setpoints, die
-    zone setpoints, layer-thickness setpoints) are held at the model's
-    nominal value for the whole horizon — a documented simplification,
-    not a full bidirectional mapping.
+    ``FirstPrinciplesModel`` input vector, converting engineering units
+    (per ``extrusion_data_legend.xlsx``) to the model's SI/native units.
+    Real signals without a direct physical-model counterpart (dosing
+    feed/proportion setpoints, die zone setpoints, layer-thickness
+    setpoints) are held at the model's nominal value for the whole
+    horizon — a documented simplification, not a full bidirectional
+    mapping.
     """
     assert U_real.shape[1] == len(INPUT_COLS), (
         f"expected {len(INPUT_COLS)} real input columns, got {U_real.shape[1]}"
@@ -76,13 +101,68 @@ def map_real_inputs_to_model(U_real: np.ndarray, model: FirstPrinciplesModel) ->
     T = U_real.shape[0]
     U_model = np.tile(model.nominal_inputs(), (T, 1))
 
-    U_model[:, model.sl_u_T_sp] = U_real[:, _REAL_ZONE_SETPOINT_IDX]
-    U_model[:, model.sl_u_N_ibc_set] = U_real[:, _REAL_IBC_SETPOINT_IDX]
-    U_model[:, model.sl_u_T_sp_cool] = U_real[:, _REAL_COOLING_SETPOINT_IDX]
-    U_model[:, model.sl_u_v_haul_set] = U_real[:, _REAL_HAULOFF_SETPOINT_IDX]
-    U_model[:, model.sl_u_T_drive_set] = U_real[:, _REAL_WINDER_SPEED_IDX]
-    U_model[:, model.sl_u_sigma_web_set] = U_real[:, _REAL_WINDER_TENS_IDX]
+    U_model[:, model.sl_u_T_sp] = U_real[:, _REAL_ZONE_SETPOINT_IDX] + _DEG_C_TO_K
+    U_model[:, model.sl_u_N_ibc_set] = U_real[:, _REAL_IBC_SETPOINT_IDX] / 100.0 * _IBC_PCT_FULL_SCALE
+    U_model[:, model.sl_u_T_sp_cool] = U_real[:, _REAL_COOLING_SETPOINT_IDX] + _DEG_C_TO_K
+    U_model[:, model.sl_u_v_haul_set] = U_real[:, _REAL_HAULOFF_SETPOINT_IDX] / 60.0
+
+    # T_drive_set is a torque-like relaxation target, not a speed — the real
+    # signal (0-100% winder drive command) has no exact physical-model
+    # counterpart, so it's scaled proportionally against the nominal torque.
+    T_drive_nom = model.nominal_inputs()[model.sl_u_T_drive_set]
+    U_model[:, model.sl_u_T_drive_set] = U_real[:, _REAL_WINDER_SPEED_IDX] / 100.0 * T_drive_nom
+
+    U_model[:, model.sl_u_sigma_web_set] = U_real[:, _REAL_WINDER_TENS_IDX] / _tension_force_per_stress(model)
     return U_model
+
+
+# ---------------------------------------------------------------------------
+# Real-data output mapping
+# ---------------------------------------------------------------------------
+
+def map_model_outputs_to_real(Y_model: np.ndarray, model: FirstPrinciplesModel) -> np.ndarray:
+    """
+    Convert the physical model's native output vector (``outputs()``'s own
+    T_melt/P/delta/N_ibc/T_cool/v_haul/R_roll/L_rem/sigma_web layout and SI
+    units) into ``config.OUTPUT_COLS``' real-SCADA column order and
+    engineering units, so it can be compared directly against real (U, Y)
+    data. Mirrors ``map_real_inputs_to_model`` for the output side.
+
+    The model's own output order does NOT match ``OUTPUT_COLS`` (e.g. the
+    model emits T_melt first, but ``OUTPUT_COLS`` lists layer-thickness
+    first) — comparing them position-for-position without this remap
+    compares physically unrelated quantities and was the dominant source
+    of the grey-box fit's catastrophic misfit on real data.
+    """
+    n_e, n_i, n_w = model.n_ext, model.n_ibc, model.n_wind
+    assert (n_e, n_i, n_w) == (3, 3, 2), (
+        "output remap assumes the real dataset's 3-extruder/3-IBC/2-winder layout"
+    )
+    force_per_stress = _tension_force_per_stress(model)
+
+    T = Y_model.shape[0]
+    Y_real = np.zeros((T, len(OUTPUT_COLS)))
+
+    # Layer-thickness fraction -> absolute thickness [um], approximated
+    # against the nominal total film thickness (no better reference exists
+    # for a lumped 0-D bubble/film model).
+    h_film_ref = float(model.nominal_state_guess()[model.sl_h_film][0])
+    Y_real[:, 0:3] = Y_model[:, model.sl_y_delta] * (h_film_ref * 1.0e6)
+    Y_real[:, 3:6] = Y_model[:, model.sl_y_T_melt] - _DEG_C_TO_K
+    Y_real[:, 6:9] = Y_model[:, model.sl_y_P] / _BAR_TO_PA
+    Y_real[:, 9:12] = Y_model[:, model.sl_y_N_ibc] / _IBC_PCT_FULL_SCALE * 100.0
+    Y_real[:, 12:15] = Y_model[:, model.sl_y_T_cool] - _DEG_C_TO_K
+    Y_real[:, 15] = Y_model[:, model.sl_y_v_haul][:, 0] * 60.0
+
+    R_roll = Y_model[:, model.sl_y_R_roll]
+    L_rem = Y_model[:, model.sl_y_L_rem]
+    sigma_web = Y_model[:, model.sl_y_sigma_web]
+    for w in range(n_w):
+        base = 16 + 3 * w
+        Y_real[:, base] = R_roll[:, w] * 1000.0            # m -> mm
+        Y_real[:, base + 1] = L_rem[:, w]                  # already meters
+        Y_real[:, base + 2] = sigma_web[:, w] * force_per_stress  # Pa -> N
+    return Y_real
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +231,16 @@ class GreyBoxIdentifier:
         self._x0_warm: Optional[np.ndarray] = None
         self._n_iter = 0
         self.last_diagnostics: Optional[dict] = None
+        #: Whether the last ``fit()`` call mapped real SCADA (U, Y) columns
+        #: onto/from the model's own layout (vs. already model-native data,
+        #: e.g. synthetic data generated directly from this physical model).
+        self.last_real_data_mode: bool = False
+        self._real_data_mode = False
+        self._y_scale: Optional[np.ndarray] = None
+        #: The optimised FirstPrinciplesModel from the last ``fit()`` call
+        #: — needed by callers to convert ``ss.simulate(U)`` back into
+        #: real-SCADA order/units via ``map_model_outputs_to_real``.
+        self.last_physical_model: Optional[FirstPrinciplesModel] = None
 
     # ------------------------------------------------------------------
     def fit(self, U: np.ndarray, Y: np.ndarray) -> Tuple[StateSpaceModel, GreyBoxResult, np.ndarray]:
@@ -161,7 +251,8 @@ class GreyBoxIdentifier:
         unless real SCADA columns needed mapping onto the model's own
         input layout — see ``map_real_inputs_to_model``).
         """
-        if U.shape[1] != self.model.n_inputs:
+        self._real_data_mode = U.shape[1] != self.model.n_inputs
+        if self._real_data_mode:
             logger.info(
                 "Input dimension (%d) does not match the physical model "
                 "(%d) — mapping real SCADA columns onto the model's "
@@ -169,6 +260,12 @@ class GreyBoxIdentifier:
                 U.shape[1], self.model.n_inputs,
             )
             U = map_real_inputs_to_model(U, self.model)
+
+        # Real-world channels span wildly different units/scales (um vs bar
+        # vs % vs m) -- normalise each output's squared error by its own
+        # variance so no single large-magnitude channel dominates the cost.
+        self._y_scale = np.maximum(np.std(Y, axis=0), 1.0e-6) if self._real_data_mode else np.ones(Y.shape[1])
+        self.last_real_data_mode = self._real_data_mode
 
         n_groups = len(self.PARAM_GROUPS)
         x0 = np.ones(n_groups)
@@ -192,6 +289,7 @@ class GreyBoxIdentifier:
         )
 
         model = self._build_model(res.x)
+        self.last_physical_model = model
         u0 = model.nominal_inputs()
         x0_guess = self._x0_warm if self._x0_warm is not None else model.nominal_state_guess()
         ss, _, _, sp_diagnostics = model.to_state_space_model(
@@ -284,9 +382,11 @@ class GreyBoxIdentifier:
 
         ss = StateSpaceModel(A=A_d, B=B_d, C=C_d, D=D_d, Ts=self.Ts)
         Y_hat = ss.simulate(U)
+        if self._real_data_mode:
+            Y_hat = map_model_outputs_to_real(Y_hat, model)
         if not np.all(np.isfinite(Y_hat)):
             return 1.0e8
-        mse = float(np.mean((Y - Y_hat) ** 2))
+        mse = float(np.mean(((Y - Y_hat) / self._y_scale) ** 2))
         if not np.isfinite(mse) or mse > 1.0e8:
             return 1.0e8
         return mse + stab_pen

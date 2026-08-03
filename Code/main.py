@@ -106,7 +106,7 @@ from config import (
 )
 from data_manager import DataManager, IODataset
 from estimation import KalmanFilter
-from grey_box import GreyBoxIdentifier
+from grey_box import GreyBoxIdentifier, map_model_outputs_to_real
 from model_reduction import ModelReducer, ReducedModel
 from mpc_controller import MPCController, MPCWeightOptimiser
 from persistence import ControllerWeightsStore, ModelStore
@@ -358,8 +358,15 @@ class BlownFilmPipeline:
         )
         model, gb_result, U_model = identifier.fit(ds.U_train, ds.Y_train)
 
+        Y_hat = model.simulate(U_model)
+        if identifier.last_real_data_mode:
+            # Model outputs are in the physical model's own order/units
+            # (Kelvin, Pa, ...) — convert to config.OUTPUT_COLS' real-SCADA
+            # order/units before comparing against real training data.
+            Y_hat = map_model_outputs_to_real(Y_hat, identifier.last_physical_model)
+
         check = evaluate_accuracy(
-            ds.Y_train, model.simulate(U_model), ds.output_cols,
+            ds.Y_train, Y_hat, ds.output_cols,
             stage="post-identification",
             threshold=acc_cfg.min_r2,
             n_states=model.n_states,
@@ -745,7 +752,7 @@ def _parse_args() -> argparse.Namespace:
         help="Directory for figures and report",
     )
     parser.add_argument(
-        "--n_id", type=int, default=145,
+        "--n_id", type=int, default=146,
         help="N4SID model order (only used when --identification_method n4sid)",
     )
     parser.add_argument(
@@ -767,8 +774,12 @@ def _parse_args() -> argparse.Namespace:
         help="Required worst-case per-output R² (accuracy gate)",
     )
     parser.add_argument(
-        "--max_n_states", type=int, default=100,
-        help="Ceiling for automatic N4SID order escalation on gate failure",
+        "--max_n_states", type=int, default=146,
+        help=(
+            "Ceiling for automatic N4SID order escalation on gate failure "
+            "(must be >= --n_id, otherwise the very first attempt already "
+            "exceeds the cap and escalation never actually runs)"
+        ),
     )
     parser.add_argument(
         "--max_n_states_bt", type=int, default=50,

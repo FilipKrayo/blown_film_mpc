@@ -666,7 +666,16 @@ class FirstPrinciplesModel:
         u[self.sl_u_T_sp] = dp["T_nom"]
         u[self.sl_u_mdot_feed] = dp["mdot_out_dos_nom"].ravel()
         u[self.sl_u_phi_set] = dp["phi_nom"].ravel()
-        u[self.sl_u_T_sp_die] = dp["T_nom"]
+        # u_die's dynamics are a proportional (offset-prone) actuator law:
+        # u_die_dot = (Kp_die*(T_sp_die - T_die) - u_die) / tau. Steady state
+        # requires u_die = die_UA*(T_die-T_amb)/die_heater_gain (to balance
+        # heat loss) AND u_die = Kp_die*(T_sp_die - T_die) simultaneously, so
+        # T_sp_die must be offset above the die temperature target by the
+        # actuator's proportional droop (u_die_eq/Kp_die) rather than set
+        # equal to it — otherwise no consistent equilibrium exists and the
+        # operating-point Newton solve diverges trying to satisfy both.
+        u_die_eq = p.die_UA * (dp["T_nom"] - p.T_amb) / p.die_heater_gain
+        u[self.sl_u_T_sp_die] = dp["T_nom"] + u_die_eq / p.Kp_die
         u[self.sl_u_N_ibc_set] = 1200.0
         u[self.sl_u_T_sp_cool] = 288.15
         u[self.sl_u_v_haul_set] = 0.6   # m/s (~36 m/min)
@@ -685,11 +694,23 @@ class FirstPrinciplesModel:
         # so it carries no independent information here.
         R_nom = 0.2
         h_film_nom = 5.0e-5
-        P_bub_nom = 300.0
+        # P_bub's IBC mass-balance equilibrium (mdot_in_ibc == mdot_out_ibc,
+        # see dynamics()'s P_bub_dot) is ibc_gain*N_ibc / (2*ibc_outflow_gain)
+        # for the nominal N_ibc_set=1200 — NOT the previously-hardcoded 300.0,
+        # which left a mass-balance residual amplified ~2.4e5x by the ideal-
+        # gas conversion factor (gamma_air/bubble_volume_nom * R_gas*T_air/M_air),
+        # large enough on its own to make the Newton solve diverge.
+        P_bub_nom = p.ibc_gain * 1200.0 / max(2.0 * p.ibc_outflow_gain, 1e-12)
         v_haul_nom = 0.6
-        # Bubble axial velocity relaxes toward mdot_total/(rho*2*pi*R*h);
-        # start there directly so v_z_dot ~ 0 at the guess.
-        v_z_nom = dp["mdot_total_nom"] / max(p.rho_film * 2 * np.pi * R_nom * h_film_nom, 1e-9)
+        # sigma_haul_dot = E_film*h_film*width/L_span * (v_haul - v_z) has a
+        # huge stiffness gain (E_film ~1e8) — deriving v_z_nom independently
+        # from a mass-balance formula (mdot_total/(rho*2*pi*R*h)) leaves a
+        # tiny (v_haul - v_z) mismatch that gets amplified into a residual
+        # of O(1e3), which was enough to make the Newton solve diverge to
+        # non-physical magnitudes. Set v_z_nom = v_haul_nom directly instead
+        # (their equality IS the equilibrium condition for that state), so
+        # the initial guess starts near that equation's root.
+        v_z_nom = v_haul_nom
         sigma_zz_nom = P_bub_nom * R_nom / max(2 * h_film_nom, 1e-9)
 
         # Winder: R_roll*omega_drum = v_haul at equilibrium; back out the
@@ -709,12 +730,19 @@ class FirstPrinciplesModel:
         x[self.sl_N_dos] = self.params.N_dos_nom.ravel()
         x[self.sl_phi] = dp["phi_nom"].ravel()
         x[self.sl_T_die] = dp["T_nom"]
-        x[self.sl_u_die] = 0.5
+        # Matches the T_sp_die offset applied in nominal_inputs() so u_die
+        # starts at its actual steady-state value instead of an arbitrary
+        # placeholder (previously 0.5, vs. a true equilibrium of O(10-100)).
+        x[self.sl_u_die] = p.die_UA * (dp["T_nom"] - p.T_amb) / p.die_heater_gain
         x[self.sl_R] = R_nom
         x[self.sl_h_film] = h_film_nom
         x[self.sl_P_bub] = P_bub_nom
         x[self.sl_v_z] = v_z_nom
-        x[self.sl_T_f] = 313.15
+        # T_f_dot=0 requires T_f = weighted average of T_amb and T_ibc (its
+        # only two coupling terms) — the previously-hardcoded 313.15 ignored
+        # that balance (true equilibrium ~291K), leaving a residual of ~-15.
+        T_f_nom = (p.h_ext_conv * p.T_amb + p.h_int_conv * 288.15) / (p.h_ext_conv + p.h_int_conv)
+        x[self.sl_T_f] = T_f_nom
         x[self.sl_sigma_zz] = sigma_zz_nom
         x[self.sl_T_ibc] = 288.15
         x[self.sl_N_ibc] = 1200.0
@@ -965,23 +993,45 @@ class FirstPrinciplesModel:
 
         scale = np.maximum(np.abs(x0_guess), 1.0)
 
-        def scaled_residual(z: np.ndarray) -> np.ndarray:
-            return self.dynamics(z * scale, u0) * scale
+        # L_job/L_w (job-length and per-winder roll-length counters) and
+        # m_dos (accumulated dosed mass) are pure integrators: their xdot
+        # doesn't depend on their own state value at all (only on other
+        # states/inputs), so under normal operation they have no root and
+        # their row/column of the Jacobian is structurally zero — making
+        # the full-state Jacobian singular. That singularity was observed
+        # to make the solver diverge wildly (>1e10x) even from an otherwise
+        # -good guess. They're excluded from the root-solve here and held
+        # at their initial-guess value instead; that's still a valid
+        # linearisation point for them since their own dynamics don't
+        # depend on their value.
+        excluded = np.zeros(self.n_states, dtype=bool)
+        excluded[self.sl_L_job] = True
+        excluded[self.sl_L_w] = True
+        excluded[self.sl_m_dos] = True
+        free = ~excluded
 
+        def scaled_residual(z_free: np.ndarray) -> np.ndarray:
+            z = x0_guess / scale
+            z[free] = z_free
+            return (self.dynamics(z * scale, u0) * scale)[free]
+
+        z0 = x0_guess / scale
         result = root(
-            scaled_residual, x0_guess / scale, method="hybr",
+            scaled_residual, z0[free], method="hybr",
             options={"maxfev": 20000},
         )
         z_bound = 50.0
-        z_clamped = np.clip(result.x, -z_bound, z_bound)
+        z_free_clamped = np.clip(result.x, -z_bound, z_bound)
         if np.any(np.abs(result.x) > z_bound):
             logger.warning(
                 "Operating-point solve diverged to a non-physical magnitude "
                 "(max %.3gx the nominal guess) — clamping to +/-%.0fx.",
                 float(np.max(np.abs(result.x))), z_bound,
             )
-        x0 = z_clamped * scale
-        residual_norm = float(np.linalg.norm(self.dynamics(x0, u0)))
+        z = x0_guess / scale
+        z[free] = z_free_clamped
+        x0 = z * scale
+        residual_norm = float(np.linalg.norm(self.dynamics(x0, u0)[free]))
         if not result.success or residual_norm > 1.0:
             logger.warning(
                 "Operating-point solve did not fully converge "
