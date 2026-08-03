@@ -130,44 +130,161 @@ winding the collapsed film onto rolls.
 ## Mathematical Background
 ---
 
-## � Underlying Physical Model
+## 📐 Original PDE/ODE System Model
 
-The blown-film line is described by a **first-principles distributed-
-parameter model** with 146 states spanning extruders, dosing, die head,
-bubble dynamics, cooling, haul-off, and winder subsystems. This model
-is used for **grey-box identification** (optional) — an alternative to
-the pure data-driven N4SID approach.
+Before data-driven system identification is applied, the blown film
+line is described by a **first-principles mathematical model** derived
+from conservation laws, constitutive relations, and empirical
+correlations. This section documents the full physics-based model that
+motivates the state space structure used in the identification and
+MPC pipeline.
 
-For grey-box identification, the model is:
-1. **Linearised** around a steady-state operating point (computed from
-   real-data mean inputs).
-2. **Reduced** to ~10 states via balanced truncation.
-3. **Optimised** via L-BFGS-B to fit input-output data (state-space
-   matrices A/B/C).
-
-The **N4SID identification method** bypasses the physical model entirely,
-identifying the state-space matrices purely from data. This is the
-default identification method and is more robust to real-world plant
-mismatches.
-
-Both identification methods produce a **discrete-time linear state-space
-model** suitable for MPC design:
-
-```math
-x_{k+1} = A\,x_k + B\,u_k
-```
-
-```math
-y_k = C\,x_k + D\,u_k
-```
-
-This is reduced further via balanced truncation (HSV-based) and POD/
-Galerkin projection to ~12–25 states, then augmented with disturbance
-states for offset-free MPC.
+The model spans **nine coupled physical domains**, each contributing
+states to the full-order system of dimension $`n_x = 146`$.
 
 ---
 
-## 📐 Mathematical Background
+### 1. Extruder Dynamics
+
+#### 1.1 Melt Flow Rate
+
+The volumetric throughput of extruder $`k`$ is governed by the
+classical drag-pressure flow decomposition for a single-screw
+extruder:
+
+```math
+Q_k = \alpha_k N_k - \beta_k \frac{\Delta P_k}{\mu_k(T_k,\,\dot{\gamma}_k)}
+```
+
+| Symbol | Description | Unit |
+|--------|-------------|------|
+| $`Q_k`$ | Volumetric flow rate | m³/s |
+| $`\alpha_k`$ | Drag flow coefficient (screw geometry) | m³/rev |
+| $`N_k`$ | Screw rotational speed | rpm |
+| $`\beta_k`$ | Pressure flow coefficient | m³·s/kg |
+| $`\Delta P_k`$ | Pressure drop across screw | Pa |
+| $`\mu_k`$ | Non-Newtonian melt viscosity | Pa·s |
+
+#### 1.2 Non-Newtonian Viscosity
+
+The melt follows a **power-law (Ostwald–de Waele)** model with
+Arrhenius temperature dependence:
+
+```math
+\mu_k(T_k,\,\dot{\gamma}_k)
+= m_k(T_k)\cdot\dot{\gamma}_k^{\,n_k - 1}
+```
+
+```math
+m_k(T_k)
+= m_{0,k}\exp\!\left(\frac{E_{a,k}}{R\,T_k}\right)
+```
+
+| Symbol | Description | Unit |
+|--------|-------------|------|
+| $`\dot{\gamma}_k`$ | Shear rate | s⁻¹ |
+| $`n_k`$ | Power-law index | — |
+| $`m_{0,k}`$ | Reference consistency index | Pa·sⁿ |
+| $`E_{a,k}`$ | Flow activation energy | J/mol |
+| $`R`$ | Universal gas constant | J/(mol·K) |
+
+#### 1.3 Melt Pressure ODE
+
+```math
+\frac{dP_k}{dt}
+= \frac{K_k}{\rho_k}
+\bigl(\dot{m}_{in,k} - \dot{m}_{out,k}\bigr)
+```
+
+where $`K_k`$ is the bulk modulus of the polymer melt.
+
+#### 1.4 Barrel Energy Balance PDE
+
+The temperature field along the screw axis $`z`$ evolves according
+to the **convection–diffusion–reaction** equation:
+
+```math
+\rho_k c_{p,k}
+\frac{\partial T_k}{\partial t} +
+\rho_k c_{p,k}\,v_{z,k}
+\frac{\partial T_k}{\partial z}
+= \lambda_k
+\frac{\partial^2 T_k}{\partial z^2} +
+\underbrace{\eta_k\,\dot{\gamma}_k^2}_{\text{viscous dissipation}} +
+\underbrace{\dot{q}_{wall,k}(z,t)}_{\text{barrel heating}}
+```
+
+| Symbol | Description | Unit |
+|--------|-------------|------|
+| $`v_{z,k}`$ | Axial melt velocity | m/s |
+| $`\lambda_k`$ | Melt thermal conductivity | W/(m·K) |
+| $`\eta_k\dot{\gamma}_k^2`$ | Viscous dissipation (→ `DissipationPwr`) | W/m³ |
+| $`\dot{q}_{wall,k}`$ | Wall heat flux from barrel zones | W/m³ |
+
+#### 1.5 Barrel Zone Heat Flux
+
+Each of the $`j = 1,\ldots,8`$ heating zones contributes:
+
+```math
+\dot{q}_{wall,k,j}
+= h_{k,j}\,A_{k,j}
+\bigl(T_{sp,k,j} - T_k(z_j,t)\bigr)
+\cdot P_{eff,k,j}(t)
+```
+
+```math
+\frac{dT_{set,k,j}}{dt}
+= \frac{1}{\tau_{k,j}}
+\bigl(T_{sp,k,j} - T_{set,k,j}\bigr) -
+K_{P,k,j}\,e_{k,j}(t)
+```
+
+where $`e_{k,j} = T_{set,k,j} - T_{act,k,j}`$ is the zone PID
+error signal (mapped from SCADA tags `Regler_X`, `Regler_Y`,
+`ActEffectPower`).
+
+---
+
+### 2. Dosing / Feeder Dynamics
+
+For component $`i`$ in extruder $`k`$ (up to 5 components per
+extruder, mapped from `Dos_2` through `Dos_5`):
+
+#### 2.1 Component Mass Balance
+
+```math
+\frac{dm_{i,k}}{dt}
+= \dot{m}_{feed,i,k} -
+\rho_{bulk,i,k}\,Q_{dos,i,k}(N_{dos,i,k})
+```
+
+#### 2.2 Actual Proportion
+
+```math
+\phi_{i,k}(t)
+= \frac{\dot{m}_{out,i,k}}
+       {\displaystyle\sum_{i=1}^{n}\dot{m}_{out,i,k}}
+```
+
+→ `Dos_i_IstAnteil`
+
+#### 2.3 PI Dosing Control Law
+
+```math
+\frac{dN_{dos,i,k}}{dt}
+= K_{c,i,k}
+\bigl(\phi_{i,k}^{set} - \phi_{i,k}\bigr) +
+\frac{K_{c,i,k}}{\tau_{I,i,k}}
+\int_0^t
+\bigl(\phi_{i,k}^{set} - \phi_{i,k}\bigr)\,d\tau
+```
+
+#### 2.4 Mix Density
+
+```math
+\rho_{mix,k}(t)
+= \sum_{i=1}^{n}
+\phi_{i,k}(t)\cdot\rho_{bulk,i,k}
 ```
 
 → `MischDicht`
