@@ -25,21 +25,16 @@ Author : Blown Film MPC Project
 
 from __future__ import annotations
 
-import copy
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
+from scipy.linalg import cholesky, solve_discrete_lyapunov, svd
 from scipy.optimize import minimize
 
 from config import INPUT_COLS, OUTPUT_COLS, PhysicalModelConfig
-from physical_model import (
-    FirstPrinciplesModel,
-    PhysicalParameters,
-    eliminate_fast_states,
-    stabilise_discrete_matrix,
-)
+from physical_model import FirstPrinciplesModel, stabilise_discrete_matrix
 from system_identification import StateSpaceModel
 
 logger = logging.getLogger(__name__)
@@ -173,43 +168,43 @@ def map_model_outputs_to_real(Y_model: np.ndarray, model: FirstPrinciplesModel) 
 class GreyBoxResult:
     """Diagnostics from a ``GreyBoxIdentifier.fit()`` call."""
 
-    scales: np.ndarray
-    param_groups: List[str]
     cost: float
     success: bool
     n_iterations: int
+    reduced_order: int
+    n_live_inputs: int
+    hankel_singular_values: np.ndarray
 
 
 class GreyBoxIdentifier:
     """
-    Optimises a small vector of multiplicative scale factors — one per
-    named physical-parameter group — so that the resulting linearised
-    discrete-time ``FirstPrinciplesModel`` best reproduces measured
-    (U, Y) data.
+    Grey-box identification via a single linearisation, not a physical-
+    parameter-scale search: the ``FirstPrinciplesModel`` is linearised
+    ONCE, at the operating point given by the MEAN of the real training
+    data (rather than the model's own, potentially unrepresentative,
+    nominal design point), discretised, then reduced to a small state
+    order via HSV/balanced truncation. The reduced ``A``, ``B`` (only
+    the "live", i.e. real-data-mapped, input columns) and ``C`` matrices
+    are then optimised directly against measured (U, Y) data via bounded
+    L-BFGS-B — ``D`` is left fixed at its (state-order-independent)
+    linearised value. This keeps the initial guess physically motivated
+    (it comes directly from ``physical_model.py``'s own parameters) while
+    avoiding the earlier 18-parameter-group nonlinear rescaling search,
+    whose candidates could land arbitrarily far from the real data's
+    actual operating region.
 
     Parameters
     ----------
     model : FirstPrinciplesModel
-        Defines subsystem multiplicities and nominal parameters (the
-        latter are copied, never mutated in place).
+        Defines subsystem multiplicities and nominal parameters (used
+        only to obtain the initial linearisation — never scaled).
     Ts    : sampling period used for ZOH discretisation.
-    cfg   : PhysicalModelConfig (optimiser iteration/bounds settings,
-            plus singular-perturbation threshold/gap settings).
-    horizon_seconds : MPC prediction horizon in seconds (Np * Ts),
-            used to validate the singular-perturbation step-response
-            match, if enabled. ``None`` skips that validation.
+    cfg   : PhysicalModelConfig (optimiser iteration/reduced-order settings).
+    horizon_seconds : MPC prediction horizon in seconds (Np * Ts), used
+            as the windowed-simulation reset interval (see
+            ``simulate_windowed``). ``None`` simulates one continuous
+            rollout.
     """
-
-    #: Physical-parameter groups optimised as single scale factors.
-    #: Covers the main thermal/flow/control-gain behaviour without
-    #: exploding the search space to every individual array entry
-    #: (e.g. per-zone heater gains share one scale, not 12 separate ones).
-    PARAM_GROUPS: Tuple[str, ...] = (
-        "m0_visc", "Ea_visc", "alpha_drag", "beta_pressure",
-        "h_zone", "Kp_zone", "dos_gain", "Kc_dos",
-        "die_heater_gain", "Kp_die", "UA_ibc", "UA_cool",
-        "J_haul", "Kv_haul", "J_winder", "B_winder", "tau_drive", "E_film",
-    )
 
     _STABILITY_PENALTY: float = 1.0e4
 
@@ -224,11 +219,7 @@ class GreyBoxIdentifier:
         self.Ts = Ts
         self.cfg = cfg
         self.horizon_seconds = horizon_seconds
-        self._tau_threshold = (
-            cfg.fast_time_constant_threshold_factor * Ts if cfg.enable_singular_perturbation else None
-        )
-        self._base_params = copy.deepcopy(model.params)
-        self._x0_warm: Optional[np.ndarray] = None
+        self.reduced_order = cfg.grey_box_reduced_order
         self._n_iter = 0
         self.last_diagnostics: Optional[dict] = None
         #: Whether the last ``fit()`` call mapped real SCADA (U, Y) columns
@@ -256,11 +247,14 @@ class GreyBoxIdentifier:
     # ------------------------------------------------------------------
     def fit(self, U: np.ndarray, Y: np.ndarray) -> Tuple[StateSpaceModel, GreyBoxResult, np.ndarray]:
         """
-        Optimise the parameter-group scale factors against (U, Y) and
-        return the resulting ``StateSpaceModel``, fit diagnostics, and
-        the model-space input array actually used (identical to ``U``
-        unless real SCADA columns needed mapping onto the model's own
-        input layout — see ``map_real_inputs_to_model``).
+        Linearise the physical model once (at the mean of ``U``), reduce
+        it to ``cfg.grey_box_reduced_order`` states via balanced
+        truncation, then optimise the reduced ``A``/``B`` (live inputs
+        only)/``C`` matrices directly against ``(U, Y)``. Returns the
+        resulting ``StateSpaceModel``, fit diagnostics, and the model-
+        space input array actually used (identical to ``U`` unless real
+        SCADA columns needed mapping onto the model's own input layout —
+        see ``map_real_inputs_to_model``).
         """
         self._real_data_mode = U.shape[1] != self.model.n_inputs
         if self._real_data_mode:
@@ -309,20 +303,57 @@ class GreyBoxIdentifier:
             max(1, int(round(self.horizon_seconds / self.Ts))) if self.horizon_seconds else U.shape[0]
         )
 
-        n_groups = len(self.PARAM_GROUPS)
-        x0 = np.ones(n_groups)
-        bounds = [(0.2, 5.0)] * n_groups
-        self._x0_warm = None
+        # Linearise ONCE, at the operating point given by the real data's
+        # own mean (rather than the model's own, possibly unrepresentative,
+        # nominal design point) — this directly targets the root cause
+        # behind the winder/tension-channel divergence found previously
+        # (the model's nominal web-tension input was 500-3000x smaller
+        # than real-data deviations, putting the linearisation nowhere
+        # near the region it needed to be valid in).
+        model = self.model
+        self.last_physical_model = model
+        u0 = U.mean(axis=0)
+        x0_guess = model.nominal_state_guess()
+        x0 = model.solve_operating_point(u0, x0_guess)
+        A_c, B_c, C_c, D_c = model.linearise(x0, u0)
+        A_d, B_d, C_d, D_d = model.discretise(A_c, B_c, C_c, D_c, self.Ts)
+        y0 = model.outputs(x0, u0)
+
+        # Inputs the real dataset never actually varies (unmapped columns
+        # held at a constant nominal value by map_real_inputs_to_model, see
+        # module docstring) have deviation U-u0 == 0 for every sample, so
+        # their B-matrix columns contribute exactly zero to any prediction
+        # — excluding them from the optimisation avoids wasting parameters
+        # (and gradient evaluations) on directions with no signal at all.
+        live_mask = np.var(U, axis=0) > 1.0e-12
+        live_idx = np.nonzero(live_mask)[0]
+        logger.info(
+            "Grey-box: %d/%d model inputs vary in the training data "
+            "(optimising only their B-matrix columns).",
+            live_idx.size, U.shape[1],
+        )
+
+        r = min(self.reduced_order, A_d.shape[0] - 1)
+        A_r, B_r, C_r, D_r, hsv = self._balanced_truncate(A_d, B_d, C_d, D_d, r)
+        logger.info(
+            "Grey-box: reduced full order %d -> %d states via balanced "
+            "truncation (retained %.2f%% HSV energy).",
+            A_d.shape[0], r, 100.0 * np.sum(hsv[:r]) / (np.sum(hsv) + 1e-12),
+        )
+
+        theta0 = self._pack(A_r, B_r[:, live_idx], C_r)
         self._n_iter = 0
 
         logger.info(
-            "Grey-box identification: optimising %d parameter-group "
-            "scales (max_iter=%d) ...", n_groups, self.cfg.grey_box_max_iter,
+            "Grey-box identification: optimising reduced A(%dx%d)/"
+            "B(%dx%d, live only)/C(%dx%d) directly (%d params, "
+            "max_iter=%d) ...",
+            r, r, r, live_idx.size, C_r.shape[0], r, theta0.size, self.cfg.grey_box_max_iter,
         )
         res = minimize(
-            self._cost, x0, args=(U, Y),
+            self._cost_linear, theta0,
+            args=(U, Y, r, live_idx, B_r, C_r.shape[0], D_r, u0, y0, model),
             method=self.cfg.grey_box_optimisation_method,
-            bounds=bounds,
             options={"maxiter": self.cfg.grey_box_max_iter},
         )
         logger.info(
@@ -330,57 +361,34 @@ class GreyBoxIdentifier:
             "cost=%.6g | success=%s", self._n_iter, res.fun, res.success,
         )
 
-        model = self._build_model(res.x)
-        self.last_physical_model = model
-        u0 = model.nominal_inputs()
-        x0_guess = self._x0_warm if self._x0_warm is not None else model.nominal_state_guess()
-        ss, x0, u0, sp_diagnostics = model.to_state_space_model(
-            Ts=self.Ts, u0=u0, x0_guess_override=x0_guess,
-            tau_threshold=self._tau_threshold, horizon_seconds=self.horizon_seconds,
-            min_spectral_gap=self.cfg.singular_perturbation_min_gap,
-        )
+        A_opt, B_opt, C_opt = self._unpack(res.x, r, live_idx.size, C_r.shape[0])
+        B_full = B_r.copy()
+        B_full[:, live_idx] = B_opt
 
-        if not (np.all(np.isfinite(ss.A)) and np.all(np.isfinite(ss.B))):
-            # The operating-point solve can land on a poorly-converged
-            # equilibrium (see FirstPrinciplesModel.solve_operating_point's
-            # own convergence warning) whose huge state magnitudes can
-            # blow up the singular-perturbation elimination numerically.
-            # Falling back to the full-order (non-eliminated) model is
-            # always well-defined since it only relies on the Jacobian
-            # itself, not on any state-scale-dependent transform.
+        rho_opt = float(np.max(np.abs(np.linalg.eigvals(A_opt))))
+        if rho_opt >= 1.0:
             logger.warning(
-                "Singular-perturbation-reduced model contains non-finite "
-                "values (likely from a poorly-converged operating point) "
-                "— falling back to the full-order model for this fit."
+                "Grey-box fit produced an open-loop unstable reduced "
+                "model (rho=%.4f) — the real line is never operated "
+                "without closed-loop control, so clipping eigenvalues "
+                "back inside the unit disk for downstream balanced-"
+                "truncation/Kalman compatibility.", rho_opt,
             )
-            ss, x0, u0, sp_diagnostics = model.to_state_space_model(
-                Ts=self.Ts, u0=u0, x0_guess_override=x0_guess,
-            )
+            A_opt = stabilise_discrete_matrix(A_opt, threshold=0.85)
 
-        if not ss.is_stable:
-            logger.warning(
-                "Grey-box fit produced an open-loop unstable model "
-                "(rho=%.4f) — the real line is never operated without "
-                "closed-loop control, so clipping eigenvalues back inside "
-                "the unit disk for downstream balanced-truncation/Kalman "
-                "compatibility.", ss.spectral_radius,
-            )
-            ss = StateSpaceModel(
-                A=stabilise_discrete_matrix(ss.A, threshold=0.85), B=ss.B, C=ss.C, D=ss.D, Ts=ss.Ts
-            )
-
+        ss = StateSpaceModel(A=A_opt, B=B_full, C=C_opt, D=D_r, Ts=self.Ts)
         result = GreyBoxResult(
-            scales=res.x, param_groups=list(self.PARAM_GROUPS),
             cost=float(res.fun), success=bool(res.success), n_iterations=self._n_iter,
+            reduced_order=r, n_live_inputs=int(live_idx.size), hankel_singular_values=hsv,
         )
-        self.last_diagnostics = sp_diagnostics
+        self.last_diagnostics = None
         # ss's A/B/C/D describe DEVIATION dynamics around (x0, u0) — expose
         # the operating point so callers can simulate in deviation
         # coordinates (U - last_u0) and add last_y0 back to recover
-        # absolute-unit predictions (see grey_box._cost's own handling).
+        # absolute-unit predictions (see grey_box._cost_linear's own handling).
         self.last_x0 = x0
         self.last_u0 = u0
-        self.last_y0 = model.outputs(x0, u0)
+        self.last_y0 = y0
         return ss, result, U
 
     # ------------------------------------------------------------------
@@ -412,74 +420,98 @@ class GreyBoxIdentifier:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _apply_scales(self, scales: np.ndarray) -> PhysicalParameters:
-        params = copy.deepcopy(self._base_params)
-        for name, scale in zip(self.PARAM_GROUPS, scales):
-            base_value = getattr(self._base_params, name)
-            setattr(params, name, base_value * scale)
-        return params
+    _GRAMIAN_REGULARISATION: float = 1.0e-5
 
-    def _build_model(self, scales: np.ndarray) -> FirstPrinciplesModel:
-        params = self._apply_scales(scales)
-        return FirstPrinciplesModel(
-            params=params,
-            n_extruders=self.model.n_ext, n_zones=self.model.n_zone,
-            n_components=self.model.n_comp, n_die_zones=self.model.n_die,
-            n_ibc=self.model.n_ibc, n_winders=self.model.n_wind,
-        )
+    @classmethod
+    def _balanced_truncate(
+        cls, A: np.ndarray, B: np.ndarray, C: np.ndarray, D: np.ndarray, r: int,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Reduce ``(A, B, C, D)`` to ``r`` states via balanced truncation
+        (mirrors ``model_reduction.py``'s ``_balanced_truncation``). The
+        discrete Lyapunov equations behind the controllability/
+        observability Gramians are only well-posed for a STABLE ``A`` —
+        this model's raw linearisation is genuinely open-loop unstable
+        (the bubble/haul-off subsystem, only ever run under closed-loop
+        control), so the Gramians are computed from a stabilised copy of
+        ``A`` purely to obtain a well-conditioned reduction transform;
+        that transform is then applied to the ACTUAL (unstabilised)
+        matrices so the reduced model still carries the real dynamics.
+        """
+        n = A.shape[0]
+        rho = float(np.max(np.abs(np.linalg.eigvals(A))))
+        A_gram = stabilise_discrete_matrix(A, threshold=0.98) if rho > 0.98 else A
 
-    def _cost(self, scales: np.ndarray, U: np.ndarray, Y: np.ndarray) -> float:
+        Wc = solve_discrete_lyapunov(A_gram, B @ B.T)
+        Wo = solve_discrete_lyapunov(A_gram.T, C.T @ C)
+        Wc = (Wc + Wc.T) / 2
+        Wo = (Wo + Wo.T) / 2
+        reg_c = cls._GRAMIAN_REGULARISATION * max(1.0, float(np.max(np.abs(Wc)))) * np.eye(n)
+        reg_o = cls._GRAMIAN_REGULARISATION * max(1.0, float(np.max(np.abs(Wo)))) * np.eye(n)
+        Wc = Wc + reg_c
+        Wo = Wo + reg_o
+
+        Lc = cholesky(Wc, lower=True)
+        Lo = cholesky(Wo, lower=True)
+        M = Lo.T @ Lc
+        U_, S, V = svd(M, full_matrices=False)
+
+        r = max(2, min(r, n - 1))
+        Sh_i = np.diag(1.0 / np.sqrt(S[:r]))
+        T_f = Lc @ V[:r, :].T @ Sh_i     # (n, r) forward transform
+        T_i = Sh_i @ U_[:, :r].T @ Lo.T  # (r, n) inverse transform
+
+        A_r = T_i @ A @ T_f
+        B_r = T_i @ B
+        C_r = C @ T_f
+        D_r = D.copy()
+        return A_r, B_r, C_r, D_r, S
+
+    @staticmethod
+    def _pack(A_r: np.ndarray, B_live: np.ndarray, C_r: np.ndarray) -> np.ndarray:
+        return np.concatenate([A_r.ravel(), B_live.ravel(), C_r.ravel()])
+
+    @staticmethod
+    def _unpack(
+        theta: np.ndarray, r: int, n_live: int, p: int,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        i = r * r
+        A_r = theta[:i].reshape(r, r)
+        j = i + r * n_live
+        B_live = theta[i:j].reshape(r, n_live)
+        C_r = theta[j:j + p * r].reshape(p, r)
+        return A_r, B_live, C_r
+
+    def _cost_linear(
+        self,
+        theta: np.ndarray,
+        U: np.ndarray,
+        Y: np.ndarray,
+        r: int,
+        live_idx: np.ndarray,
+        B_template: np.ndarray,
+        p: int,
+        D_r: np.ndarray,
+        u0: np.ndarray,
+        y0: np.ndarray,
+        model: FirstPrinciplesModel,
+    ) -> float:
         self._n_iter += 1
-        model = self._build_model(scales)
-        u0 = model.nominal_inputs()
-        x0_guess = self._x0_warm if self._x0_warm is not None else model.nominal_state_guess()
-
-        try:
-            x0 = model.solve_operating_point(u0, x0_guess)
-            A_c, B_c, C_c, D_c = model.linearise(x0, u0)
-            if self._tau_threshold is not None:
-                A_c, B_c, C_c, D_c, _ = eliminate_fast_states(
-                    A_c, B_c, C_c, D_c, self._tau_threshold,
-                    min_spectral_gap=self.cfg.singular_perturbation_min_gap,
-                )
-            A_d, B_d, C_d, D_d = model.discretise(A_c, B_c, C_c, D_c, self.Ts)
-        except Exception:
-            logger.debug("Grey-box candidate raised during linearisation; penalising.")
+        A_r, B_live, C_r = self._unpack(theta, r, live_idx.size, p)
+        if not (np.all(np.isfinite(A_r)) and np.all(np.isfinite(B_live)) and np.all(np.isfinite(C_r))):
             return 1.0e8
+        B_r = B_template.copy()
+        B_r[:, live_idx] = B_live
 
-        if not (np.all(np.isfinite(A_d)) and np.all(np.isfinite(B_d))):
-            return 1.0e8
-        self._x0_warm = x0
-
-        rho = float(np.max(np.abs(np.linalg.eigvals(A_d))))
+        rho = float(np.max(np.abs(np.linalg.eigvals(A_r))))
         stab_pen = self._STABILITY_PENALTY * max(0.0, rho - 0.999) ** 2
+        # See _balanced_truncate's docstring / SUB-BUG 3 in the repo notes:
+        # the reduced A can still be open-loop unstable — stabilise only
+        # the copy used for simulation so the optimiser still gets a real
+        # MSE gradient signal instead of a flat overflow-penalty plateau.
+        A_sim = stabilise_discrete_matrix(A_r, threshold=0.98) if rho > 0.98 else A_r
 
-        # The bubble/haul-off tension subsystem is genuinely open-loop
-        # unstable (the real line is only ever run under closed-loop IBC/
-        # haul-off control — see stabilise_discrete_matrix's docstring),
-        # observed here with rho as high as ~1e11. Simulating that raw A_d
-        # open-loop over a long real trajectory overflows within a handful
-        # of steps regardless of the candidate scales, making every
-        # candidate's cost a flat, gradient-free 1.0e8. Stabilise before
-        # simulating (mirroring what fit() already does for its final
-        # result) so the optimiser gets a real MSE signal to follow;
-        # stab_pen above (from the unclipped rho) still discourages
-        # candidates that need heavy clipping to remain stable.
-        A_sim = stabilise_discrete_matrix(A_d, threshold=0.98) if rho > 0.98 else A_d
-
-        # A_d/B_d/C_d/D_d come from linearise(x0, u0): they describe the
-        # DEVIATION dynamics dx'=A x'+B u', y'=C x'+D u' around the
-        # operating point, not absolute physical quantities. Simulating
-        # them with the absolute input U (e.g. ~493 K zone setpoints,
-        # ~1e6 Pa web-tension setpoints) instead of the deviation U-u0
-        # injects a huge, permanent "input" the linear model was never
-        # meant to see — for 113k+ consecutive steps this drives even a
-        # mildly-integrating state (winder roll build-up, remaining
-        # length, ...) to an enormous magnitude regardless of A_sim's
-        # stability. Simulate in deviation coordinates and add the
-        # equilibrium output back to recover the absolute prediction.
-        y0 = model.outputs(x0, u0)
-        ss = StateSpaceModel(A=A_sim, B=B_d, C=C_d, D=D_d, Ts=self.Ts)
+        ss = StateSpaceModel(A=A_sim, B=B_r, C=C_r, D=D_r, Ts=self.Ts)
         Y_hat = self.simulate_windowed(ss, U, u0, y0, self._window_steps)
         if self._real_data_mode:
             Y_hat = map_model_outputs_to_real(Y_hat, model)

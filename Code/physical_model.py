@@ -186,6 +186,11 @@ class PhysicalParameters:
     L_span: np.ndarray = field(repr=False, default=None)
     eta_pack: np.ndarray = field(repr=False, default=None)
     L_target: np.ndarray = field(repr=False, default=None)
+    #: Tension-control proportional gain (dimensionless): real winders hold
+    #: web tension at a setpoint via a torque feedback loop, not an open
+    #: speed/torque profile. Without this, ``sigma_web_set`` (u) had no
+    #: path into the dynamics at all (a dead input).
+    Kp_tension: float = 1.0
 
 
 def stabilise_discrete_matrix(A: np.ndarray, threshold: float = 0.98) -> np.ndarray:
@@ -908,7 +913,16 @@ class FirstPrinciplesModel:
         L_w_dot = np.full(self.n_wind, v_haul)
         sigma_web_dot = (p.E_film * h_film * p.film_width / p.L_span
                          * (omega_drum * R_roll - v_haul))
-        T_drive_dot = (T_drive_set - T_drive) / p.tau_drive
+        # Tension feedback: real winders adjust drive torque to hold web
+        # tension at sigma_web_set (a closed-loop torque/tension control
+        # loop), not just follow an open speed/torque profile. The
+        # correction is scaled by h_film*film_width*R_roll to match the
+        # torque units of the sigma_web term already in omega_drum_dot's
+        # balance (see T_drive_nom's equilibrium formula, unaffected since
+        # sigma_web_set == sigma_web_nom at the nominal operating point).
+        T_drive_dot = (T_drive_set
+                       + p.Kp_tension * h_film * p.film_width * R_roll * (sigma_web_set - sigma_web)
+                       - T_drive) / p.tau_drive
 
         xdot[self.sl_T] = T_dot.ravel()
         xdot[self.sl_P] = P_dot

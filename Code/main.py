@@ -426,13 +426,14 @@ class BlownFilmPipeline:
 
         self._report.add_section(
             "2. System Identification (Grey-Box / Physical)",
-            f"Model order       : {model.n_states}\n"
+            f"Model order       : {model.n_states} (reduced via balanced truncation)\n"
             f"Stable            : {model.is_stable}\n"
             f"Spectral rho      : {model.spectral_radius:.4f}\n"
             f"Training R² (avg) : {avg_r2:.4f}\n"
             f"Grey-box cost     : {gb_result.cost:.6g}\n"
             f"Grey-box success  : {gb_result.success} "
             f"({gb_result.n_iterations} evaluations)\n"
+            f"Live inputs opt.  : {gb_result.n_live_inputs}\n"
             f"Singular pert.    : {sp_summary}\n"
             f"Accuracy gate     : {check.summary()}",
         )

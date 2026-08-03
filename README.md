@@ -105,7 +105,79 @@ PEP 8, SOLID principles, and modern type-annotation standards.
 
 ## 🔄 Recent Changes
 
-### Stabilized Grey-Box Identification: Windowed Simulation & Zero-Variance Exclusion (Latest)
+### Linear Grey-Box Identification via Direct Matrix Optimization (Latest)
+
+**Paradigm shift:** Replaced the 18-parameter-group multiplicative scale-
+factor search with **single-pass linearisation** + **balanced-truncation
+reduction** + **direct A/B/C matrix optimization** against real (U, Y) data.
+
+**Problem with the previous approach:**
+- Optimising 18 multiplicative scales requires repeated full nonlinear
+  solves (operating-point Newton + linearisation) for every candidate,
+  each landing at a nominally-computed operating point arbitrarily far
+  from the real data's actual regime (e.g., the model's nominal
+  `sigma_web_set` was 500–3000× smaller than real-data deviations,
+  putting the linearisation nowhere near where it needed to be valid).
+- Slow convergence and high parameter drift.
+
+**New approach:**
+
+1. **Single linearisation at real-data mean operating point** (grey_box.py):
+   - Compute `u0 = U.mean(axis=0)` (real dataset's actual mean input).
+   - Solve operating point `x0` ONCE at this u0 (not at nominal).
+   - Linearise `(A_c, B_c, C_c, D_c)` and discretise once to get `A_d, B_d, C_d, D_d`.
+   - This ensures the linearised model is valid in the region where the
+     real data actually lives.
+
+2. **Balanced truncation reduction** (grey_box.py):
+   - Reduce full-order `(A_d, B_d, C_d, D_d)` to `cfg.grey_box_reduced_order`
+     states (default: 10) via Hankel-singular-value truncation.
+   - Uses controlled Lyapunov equations for controllability/observability
+     Gramians (mirroring `model_reduction.py`'s existing pipeline).
+   - Gramians computed from a stabilised copy of `A` (for numerical
+     well-posedness) but transform applied to actual (unstabilised) model
+     so reduced model retains real open-loop dynamics.
+   - Typical HSV "knee" around r=5, capturing ~88% energy; r=10 keeps
+     safety margin.
+
+3. **Direct matrix optimisation** (grey_box.py):
+   - Optimise reduced `A_r` (r×r), `B_r` (r × live inputs), and `C_r`
+     (outputs × r) matrices directly via L-BFGS-B against (U, Y).
+   - `D_r` fixed at its linearised value (state-order-independent).
+   - Much smaller search space (≤ r² + r·n_live + p·r parameters,
+     typically 50–100 vs. 18 groups) with direct gradient signal.
+
+4. **Live input filtering** (grey_box.py):
+   - Identify inputs whose deviation `U - u0` is zero (or near-zero) for
+     the entire training set — these carry no signal and waste parameters.
+   - Exclude their B-matrix columns from optimisation.
+   - Log the count of live vs. total inputs for diagnostics.
+
+5. **Tension control feedback** (physical_model.py):
+   - Added `Kp_tension` parameter (real winders adjust drive torque to
+     hold web tension at setpoint via closed-loop feedback, not open-loop
+     profile).
+   - Corrected `T_drive_dot` dynamics to include tension feedback:
+     `T_drive_dot = (T_drive_set + Kp_tension·h·width·R·(σ_set - σ) - T_drive) / τ`.
+   - This creates a path for `sigma_web_set` input into the state dynamics
+     (previously a dead input).
+
+6. **Reporting improvements** (main.py):
+   - Report reduced model order and count of live inputs in grey-box
+     summary.
+
+**Impact:**
+- Linearisation now targets the real data's operating region, not a
+  potentially-unrelated nominal point → better fit quality.
+- Smaller, more direct parameter search with real gradient signal →
+  faster convergence, fewer evaluations.
+- Eliminated 18 multiplicative scales; replaced with single linearisation
+  + direct matrix tweaks, conceptually simpler and more interpretable.
+- Winder tension control now properly coupled to state dynamics.
+
+---
+
+### Stabilized Grey-Box Identification: Windowed Simulation & Zero-Variance Exclusion
 
 **Problem:** The bubble/haul-off subsystem is structurally **open-loop
 unstable** (spectral radius ~1e11 for nominal parameters). When simulating

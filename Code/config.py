@@ -712,6 +712,13 @@ class PhysicalModelConfig:
     n_winders: int = 2
     grey_box_max_iter: int = 30
     grey_box_optimisation_method: str = "L-BFGS-B"
+    # Reduced state order for the linear-state-space grey-box path: the
+    # physical model is linearised ONCE (at the real-data mean operating
+    # point), reduced to this order via balanced truncation (HSV energy
+    # analysis on the real dataset showed a knee around n=5, capturing
+    # ~88% of Hankel-singular-value energy — 10 keeps a safety margin),
+    # then A/B/C (not D, which is n-independent) are optimised directly.
+    grey_box_reduced_order: int = 10
 
     # Singular perturbation (README's "Time-scale separation" pipeline
     # step — eliminates states faster than the MPC sample rate can
