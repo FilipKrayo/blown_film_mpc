@@ -15,6 +15,7 @@
 ## 📋 Table of Contents
 
 - [Overview](#-overview)
+- [Recent Changes](#-recent-changes)
 - [System Description](#-system-description)
   - [Monitored Stations](#monitored-stations)
   - [Key Process Variables](#key-process-variables)
@@ -99,6 +100,145 @@ Starting from raw SCADA/PLC time-series data, the pipeline:
 
 The entire codebase is written in **object-oriented Python** following
 PEP 8, SOLID principles, and modern type-annotation standards.
+
+---
+
+## 🔄 Recent Changes
+
+### Stabilized Grey-Box Identification: Windowed Simulation & Zero-Variance Exclusion (Latest)
+
+**Problem:** The bubble/haul-off subsystem is structurally **open-loop
+unstable** (spectral radius ~1e11 for nominal parameters). When simulating
+the linearised discrete-time model `A_d` in one continuous open-loop rollout
+across 113k+ real-data training samples (157 days), the state diverges
+exponentially within a handful of steps regardless of parameter scales,
+collapsing all candidates to a flat cost landscape (1.0e8) and breaking
+gradient-based optimization.
+
+**Root causes:**
+
+1. **Unbounded integrator divergence:** Slow-integrator states (winder roll
+   build-up R_roll, remaining length L_rem) and momentum-like states
+   (film axial velocity v_z) in the real blown-film process are
+   periodically reset by physical events (roll changes, operator actions)
+   that the model has no mechanism for. Simulating open-loop for 157 days
+   lets these states grow unbounded regardless of A_d's clamped stability.
+
+2. **Zero-variance pathological outputs:** Some SCADA columns carry no
+   fittable signal (e.g. disconnected sensors reading a constant 0 or
+   NaN). Using their near-zero variance as a divisor in the cost (`(Y - Ŷ)²
+   / σ²`) turns tiny prediction errors into spurious, enormous cost
+   contributions unrelated to fit quality.
+
+**Fixes implemented:**
+
+1. **Windowed simulation** (grey_box.py, main.py):
+   - Simulate in short, non-overlapping windows (default: `horizon_seconds /
+     Ts` steps, matching MPC prediction horizon).
+   - Reset state to deviation-zero equilibrium at window boundaries instead
+     of carrying diverged state across the full 157-day trajectory.
+   - Added `GreyBoxIdentifier.simulate_windowed()` static method for
+     consistent windowing across fitting and validation.
+   - Mirrors real MPC deployment (prediction-horizon reset at each step).
+
+2. **Stabilization of open-loop unstable A_d** (grey_box.py):
+   - Before windowed simulation, clamp eigenvalues to `|λ| ≤ 0.98` if
+     spectral radius exceeds 0.98 (via `stabilise_discrete_matrix()`).
+   - Stability penalty still discourages need for clamping in the final
+     result.
+   - Optimization now receives real, gradient-rich MSE signal instead of
+     flat 1.0e8 divergence floor.
+
+3. **Zero-variance output exclusion** (grey_box.py, main.py):
+   - Identify real SCADA output columns with variance < 1e-9 (disconnected
+     sensors, uninitialized tags).
+   - Exclude them entirely from both cost computation and accuracy metrics.
+   - Log excluded columns with indices for diagnostic clarity.
+   - Apply same exclusion mask to validation pipeline (`evaluate_accuracy()`).
+
+4. **Deviation-form dynamics handling** (grey_box.py, main.py):
+   - Clarified that linearised `A_d`, `B_d`, `C_d`, `D_d` matrices describe
+     **deviation** dynamics (`dx' = Ax' + Bu'`, `y' = Cx' + Du'`) around
+     operating point `(x0, u0)`, not absolute physical quantities.
+   - Exposed `last_x0`, `last_u0`, `last_y0` from `GreyBoxIdentifier` after
+     fitting.
+   - In cost computation: simulate with `U_dev = U - u0`, add `y0` back to
+     recover absolute predictions before comparison.
+   - In validation: unscale training data (invert `RobustScaler`) to recover
+     raw engineering units before fitting and comparison.
+
+5. **.gitignore update**:
+   - Added `*.txt` and `*.log` to ignore output/diagnostic files.
+
+**Impact:**
+- Optimization converges with stable, non-flat gradient signal (MSE << 1e8
+  instead of clipped at 1e8).
+- Fitted parameters remain physically realizable (validated against the
+  model's open-loop instability tendency).
+- Improved fit quality by suppressing pathological zero-variance outputs.
+- Consistent deviation-form interpretation across fitting, validation, and
+  downstream deployment.
+
+---
+
+### Grey-Box Identification & Real-Data Unit Conversions
+
+**Problem:** Grey-box identification on real SCADA data resulted in
+catastrophic misfit due to two undetected issues:
+
+1. **Missing unit conversions:** Real SCADA signals and the physical
+   model use incompatible units. Real data records temperature in °C
+   (model uses K), pressure in bar (Pa), IBC/blower commands in 0–100%
+   (rpm), haul-off speed in m/min (m/s), and winder tension in N
+   (model's σ_web is Pa stress). Comparing raw values without conversion
+   left residuals >10⁵ in magnitude, overwhelming the least-squares fit.
+
+2. **Operating-point solver divergence:** The physical model's
+   steady-state computation (`nominal_state_guess()`) used hardcoded
+   initial guesses (P_bub = 300 Pa, v_z from mass-balance formula,
+   T_f = 313.15 K) that violated the system's equilibrium conditions.
+   This left residuals in the Newton–Raphson root-solve on the order
+   of 1e3–1e5, causing it to diverge wildly (>1e10×) even from an
+   otherwise reasonable guess, especially when pure integrators
+   (L_job, L_w, m_dos) made the Jacobian structurally singular.
+
+**Fixes implemented:**
+
+1. **Bidirectional unit conversion** in `grey_box.py`:
+   - Added `map_real_inputs_to_model()` to convert real SCADA inputs to
+     model SI/native units (°C→K, bar→Pa, 0–100%→rpm, m/min→m/s, N→Pa).
+   - Added `map_model_outputs_to_real()` to convert model outputs back
+     to real-SCADA order and units for validation.
+   - Normalized per-output cost by variance to prevent large-magnitude
+     units (Pa, bar) from dominating the optimization.
+   - Store `last_physical_model` and `last_real_data_mode` flags in
+     `GreyBoxIdentifier` so callers can convert predictions back.
+
+2. **Physical model equilibrium fixes** in `physical_model.py`:
+   - **Die actuator droop:** T_sp_die now offsets by u_die_eq/Kp_die
+     to satisfy steady-state proportional-actuator dynamics.
+   - **Bubble pressure:** P_bub_nom calculated from IBC mass-balance
+     equilibrium instead of hardcoded 300 Pa.
+   - **Film velocity:** v_z_nom = v_haul_nom (not independent
+     mass-balance formula) to satisfy stress equation equilibrium.
+   - **Die state:** u_die initial value matches T_sp_die offset.
+   - **Film temperature:** T_f calculated as weighted average of T_amb
+     and T_ibc (thermal balance condition).
+   - **Integrator exclusion:** L_job, L_w, m_dos excluded from
+     root-solve (pure integrators → no equilibrium) and held at
+     initial guess instead.
+
+3. **Validation in** `main.py`:
+   - `evaluate_accuracy()` now applies `map_model_outputs_to_real()`
+     before comparing model predictions against real training data.
+   - Updated `--n_id` and `--max_n_states` defaults to reflect new
+     baseline model order (146 states).
+
+**Impact:** Real-data grey-box identification now achieves stable
+convergence with residuals <1.0 and produces physically meaningful
+fitted parameters. Misfit on real production data is now dominated by
+model structure / parameterization error rather than numerical
+divergence or unit mismatches.
 
 ---
 

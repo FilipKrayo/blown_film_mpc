@@ -237,10 +237,21 @@ class GreyBoxIdentifier:
         self.last_real_data_mode: bool = False
         self._real_data_mode = False
         self._y_scale: Optional[np.ndarray] = None
+        #: Boolean mask over output columns excluding zero-variance real
+        #: columns (no fittable signal) from the cost/accuracy comparison.
+        self._active_outputs: Optional[np.ndarray] = None
+        self.last_active_outputs: Optional[np.ndarray] = None
+        self._window_steps: int = 1
         #: The optimised FirstPrinciplesModel from the last ``fit()`` call
         #: — needed by callers to convert ``ss.simulate(U)`` back into
         #: real-SCADA order/units via ``map_model_outputs_to_real``.
         self.last_physical_model: Optional[FirstPrinciplesModel] = None
+        #: Operating point (x0, u0) the last fit()'s returned StateSpaceModel
+        #: was linearised around, plus y0=outputs(x0,u0) — needed because the
+        #: model's A/B/C/D describe DEVIATION dynamics, not absolute values.
+        self.last_x0: Optional[np.ndarray] = None
+        self.last_u0: Optional[np.ndarray] = None
+        self.last_y0: Optional[np.ndarray] = None
 
     # ------------------------------------------------------------------
     def fit(self, U: np.ndarray, Y: np.ndarray) -> Tuple[StateSpaceModel, GreyBoxResult, np.ndarray]:
@@ -264,8 +275,39 @@ class GreyBoxIdentifier:
         # Real-world channels span wildly different units/scales (um vs bar
         # vs % vs m) -- normalise each output's squared error by its own
         # variance so no single large-magnitude channel dominates the cost.
-        self._y_scale = np.maximum(np.std(Y, axis=0), 1.0e-6) if self._real_data_mode else np.ones(Y.shape[1])
+        # Columns with (near-)zero variance (e.g. an unpopulated/disconnected
+        # SCADA tag reading a constant 0 for the whole dataset) carry no fit-
+        # able signal at all -- excluded entirely rather than floor-dividing
+        # by a near-zero std, which would otherwise turn a tiny prediction
+        # into a spurious, enormous cost contribution unrelated to fit quality.
+        y_std = np.std(Y, axis=0)
+        self._active_outputs = y_std > 1.0e-9 if self._real_data_mode else np.ones(Y.shape[1], dtype=bool)
+        if self._real_data_mode and not np.all(self._active_outputs):
+            logger.warning(
+                "Excluding %d zero-variance real output column(s) from the "
+                "grey-box cost/accuracy comparison (no fittable signal): "
+                "indices %s",
+                int(np.sum(~self._active_outputs)),
+                list(np.nonzero(~self._active_outputs)[0]),
+            )
+        self._y_scale = np.maximum(y_std, 1.0e-6) if self._real_data_mode else np.ones(Y.shape[1])
         self.last_real_data_mode = self._real_data_mode
+        self.last_active_outputs = self._active_outputs
+
+        # Simulate in short, non-overlapping windows (reset to the
+        # equilibrium/deviation-zero state at the start of each window)
+        # instead of one continuous open-loop rollout across the whole
+        # ~157-day training set. Some physical states are structurally
+        # slow integrators (e.g. winder roll build-up/remaining length)
+        # whose real-world counterparts get periodically reset (roll
+        # changes) that this model has no mechanism for -- an unbounded
+        # single continuous simulation diverges regardless of parameter
+        # scales. Bounding the rollout to the same horizon the model is
+        # actually used for downstream (MPC prediction, horizon_seconds)
+        # avoids this while still scoring genuine multi-step dynamic fit.
+        self._window_steps = (
+            max(1, int(round(self.horizon_seconds / self.Ts))) if self.horizon_seconds else U.shape[0]
+        )
 
         n_groups = len(self.PARAM_GROUPS)
         x0 = np.ones(n_groups)
@@ -292,7 +334,7 @@ class GreyBoxIdentifier:
         self.last_physical_model = model
         u0 = model.nominal_inputs()
         x0_guess = self._x0_warm if self._x0_warm is not None else model.nominal_state_guess()
-        ss, _, _, sp_diagnostics = model.to_state_space_model(
+        ss, x0, u0, sp_diagnostics = model.to_state_space_model(
             Ts=self.Ts, u0=u0, x0_guess_override=x0_guess,
             tau_threshold=self._tau_threshold, horizon_seconds=self.horizon_seconds,
             min_spectral_gap=self.cfg.singular_perturbation_min_gap,
@@ -311,7 +353,7 @@ class GreyBoxIdentifier:
                 "values (likely from a poorly-converged operating point) "
                 "— falling back to the full-order model for this fit."
             )
-            ss, _, _, sp_diagnostics = model.to_state_space_model(
+            ss, x0, u0, sp_diagnostics = model.to_state_space_model(
                 Ts=self.Ts, u0=u0, x0_guess_override=x0_guess,
             )
 
@@ -332,7 +374,39 @@ class GreyBoxIdentifier:
             cost=float(res.fun), success=bool(res.success), n_iterations=self._n_iter,
         )
         self.last_diagnostics = sp_diagnostics
+        # ss's A/B/C/D describe DEVIATION dynamics around (x0, u0) — expose
+        # the operating point so callers can simulate in deviation
+        # coordinates (U - last_u0) and add last_y0 back to recover
+        # absolute-unit predictions (see grey_box._cost's own handling).
+        self.last_x0 = x0
+        self.last_u0 = u0
+        self.last_y0 = model.outputs(x0, u0)
         return ss, result, U
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def simulate_windowed(
+        ss: StateSpaceModel, U: np.ndarray, u0: np.ndarray, y0: np.ndarray, window_steps: int,
+    ) -> np.ndarray:
+        """
+        Simulate a deviation-form ``StateSpaceModel`` (linearised around
+        ``(x0, u0)`` with ``y0 = outputs(x0, u0)``) in short, non-
+        overlapping windows, resetting the state to the deviation-zero
+        equilibrium at the start of each window, instead of one
+        continuous open-loop rollout across the whole input sequence.
+        See ``_cost()``'s comment for why: some states are structural
+        slow integrators (e.g. winder roll build-up) whose real-world
+        counterparts get periodically reset in a way this model has no
+        mechanism for, so an unbounded continuous rollout diverges
+        regardless of parameter scales.
+        """
+        U_dev = U - u0[None, :]
+        T = U_dev.shape[0]
+        Y_hat = np.empty((T, y0.shape[0]))
+        for start in range(0, T, window_steps):
+            end = min(start + window_steps, T)
+            Y_hat[start:end] = ss.simulate(U_dev[start:end]) + y0[None, :]
+        return Y_hat
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -380,13 +454,39 @@ class GreyBoxIdentifier:
         rho = float(np.max(np.abs(np.linalg.eigvals(A_d))))
         stab_pen = self._STABILITY_PENALTY * max(0.0, rho - 0.999) ** 2
 
-        ss = StateSpaceModel(A=A_d, B=B_d, C=C_d, D=D_d, Ts=self.Ts)
-        Y_hat = ss.simulate(U)
+        # The bubble/haul-off tension subsystem is genuinely open-loop
+        # unstable (the real line is only ever run under closed-loop IBC/
+        # haul-off control — see stabilise_discrete_matrix's docstring),
+        # observed here with rho as high as ~1e11. Simulating that raw A_d
+        # open-loop over a long real trajectory overflows within a handful
+        # of steps regardless of the candidate scales, making every
+        # candidate's cost a flat, gradient-free 1.0e8. Stabilise before
+        # simulating (mirroring what fit() already does for its final
+        # result) so the optimiser gets a real MSE signal to follow;
+        # stab_pen above (from the unclipped rho) still discourages
+        # candidates that need heavy clipping to remain stable.
+        A_sim = stabilise_discrete_matrix(A_d, threshold=0.98) if rho > 0.98 else A_d
+
+        # A_d/B_d/C_d/D_d come from linearise(x0, u0): they describe the
+        # DEVIATION dynamics dx'=A x'+B u', y'=C x'+D u' around the
+        # operating point, not absolute physical quantities. Simulating
+        # them with the absolute input U (e.g. ~493 K zone setpoints,
+        # ~1e6 Pa web-tension setpoints) instead of the deviation U-u0
+        # injects a huge, permanent "input" the linear model was never
+        # meant to see — for 113k+ consecutive steps this drives even a
+        # mildly-integrating state (winder roll build-up, remaining
+        # length, ...) to an enormous magnitude regardless of A_sim's
+        # stability. Simulate in deviation coordinates and add the
+        # equilibrium output back to recover the absolute prediction.
+        y0 = model.outputs(x0, u0)
+        ss = StateSpaceModel(A=A_sim, B=B_d, C=C_d, D=D_d, Ts=self.Ts)
+        Y_hat = self.simulate_windowed(ss, U, u0, y0, self._window_steps)
         if self._real_data_mode:
             Y_hat = map_model_outputs_to_real(Y_hat, model)
         if not np.all(np.isfinite(Y_hat)):
             return 1.0e8
-        mse = float(np.mean(((Y - Y_hat) / self._y_scale) ** 2))
+        active = self._active_outputs
+        mse = float(np.mean(((Y[:, active] - Y_hat[:, active]) / self._y_scale[active]) ** 2))
         if not np.isfinite(mse) or mse > 1.0e8:
             return 1.0e8
         return mse + stab_pen

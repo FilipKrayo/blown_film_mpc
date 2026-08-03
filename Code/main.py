@@ -356,17 +356,41 @@ class BlownFilmPipeline:
             model=phys_model, Ts=self._cfg.data.sampling_time, cfg=phys_cfg,
             horizon_seconds=horizon_seconds,
         )
-        model, gb_result, U_model = identifier.fit(ds.U_train, ds.Y_train)
+        # ds.U_train/Y_train are RobustScaler-scaled (see IODataset's own
+        # docstring) — grey_box's real-data unit conversions (°C->K,
+        # m/min->m/s, ...) need actual engineering-unit values, so invert
+        # the scaling back to raw physical units before fitting/comparing.
+        U_train_raw = ds.scaler_u.inverse_transform(ds.U_train)
+        Y_train_raw = ds.scaler_y.inverse_transform(ds.Y_train)
+        model, gb_result, U_model = identifier.fit(U_train_raw, Y_train_raw)
 
-        Y_hat = model.simulate(U_model)
+        # model's A/B/C/D describe DEVIATION dynamics around
+        # (identifier.last_x0, identifier.last_u0) — simulate windowed
+        # (resetting state every horizon_seconds/Ts steps, mirroring
+        # GreyBoxIdentifier._cost's own handling) and add the equilibrium
+        # output back to recover the absolute-unit prediction.
+        window_steps = (
+            max(1, int(round(horizon_seconds / self._cfg.data.sampling_time)))
+            if horizon_seconds else U_model.shape[0]
+        )
+        Y_hat = GreyBoxIdentifier.simulate_windowed(
+            model, U_model, identifier.last_u0, identifier.last_y0, window_steps,
+        )
         if identifier.last_real_data_mode:
             # Model outputs are in the physical model's own order/units
             # (Kelvin, Pa, ...) — convert to config.OUTPUT_COLS' real-SCADA
             # order/units before comparing against real training data.
             Y_hat = map_model_outputs_to_real(Y_hat, identifier.last_physical_model)
 
+        active = identifier.last_active_outputs
+        if active is not None and not np.all(active):
+            output_cols_active = [c for c, ok in zip(ds.output_cols, active) if ok]
+            Y_train_cmp, Y_hat_cmp = Y_train_raw[:, active], Y_hat[:, active]
+        else:
+            output_cols_active, Y_train_cmp, Y_hat_cmp = ds.output_cols, Y_train_raw, Y_hat
+
         check = evaluate_accuracy(
-            ds.Y_train, Y_hat, ds.output_cols,
+            Y_train_cmp, Y_hat_cmp, output_cols_active,
             stage="post-identification",
             threshold=acc_cfg.min_r2,
             n_states=model.n_states,
