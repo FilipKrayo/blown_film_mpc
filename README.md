@@ -15,6 +15,7 @@
 ## 📋 Table of Contents
 
 - [Overview](#-overview)
+- [Recent Updates](#-recent-updates)
 - [System Description](#-system-description)
   - [Monitored Stations](#monitored-stations)
   - [Key Process Variables](#key-process-variables)
@@ -98,6 +99,28 @@ Starting from raw SCADA/PLC time-series data, the pipeline:
 
 The entire codebase is written in **object-oriented Python** following
 PEP 8, SOLID principles, and modern type-annotation standards.
+
+---
+
+## 📝 Recent Updates
+
+### August 2026 — Grey-Box Real-Data Handling & Bug Fixes
+
+- **Fixed column name typo** ([config.py](Code/config.py)): Corrected `IstForederrate` → `IstFoerderrate` (German "Förderrate" / feed rate) across 15 dosing-rate entries in `ALL_COLUMNS`, resolving silent data-column dropping and warnings.
+
+- **Increased grey-box reduced order** ([config.py](Code/config.py)): Changed `grey_box_reduced_order` from 10 to 15 to retain more model fidelity before grey-box optimization, providing a wider safety margin when identifying the reduced linearised state space.
+
+- **Added progress bar to grey-box identification** ([grey_box.py](Code/grey_box.py)): Wrapped the L-BFGS-B optimization with a `tqdm` progress bar (evaluation count, not iteration count) to track grey-box parameter fitting progress, mirroring the pattern used in MPC weight optimization.
+
+- **Fixed grey-box real-SCADA-data coordinate space mismatch** ([main.py](Code/main.py), [simulation.py](Code/simulation.py)): 
+  - Added pipeline-level metadata tracking (`_real_data_mode`, `_phys_model`, `_u0`, `_y0`, `_active_outputs`) for grey-box identification path.
+  - Introduced `_predict_test()` helper that correctly transforms test data between the real SCADA input space (26 columns, scaled) and the physical model's native space (60 inputs, raw units, deviation coordinates) — fixes the crash `ValueError: matmul size 26 is different from 60` that occurred in model reduction and validation stages.
+  - Added cache guard: cached models identified in grey-box/physical mode now force rebuild (they require a freshly re-solved operating point, not available from cache).
+  - Extracted `ModelValidator.compute_metrics()` for flexible metrics computation on arbitrary predictions.
+
+These changes ensure the complete pipeline runs correctly when using grey-box identification on real SCADA data with fewer input columns than the physics model's full 60-input specification.
+
+---
 
 ---
 

@@ -106,7 +106,7 @@ from config import (
 )
 from data_manager import DataManager, IODataset
 from estimation import KalmanFilter
-from grey_box import GreyBoxIdentifier, map_model_outputs_to_real
+from grey_box import GreyBoxIdentifier, map_model_outputs_to_real, map_real_inputs_to_model
 from model_reduction import ModelReducer, ReducedModel
 from mpc_controller import MPCController, MPCWeightOptimiser
 from persistence import ControllerWeightsStore, ModelStore
@@ -184,6 +184,21 @@ class BlownFilmPipeline:
         self._kf:       KalmanFilter | None    = None
         self._mpc:      MPCController | None   = None
         self._sim_result: SimulationResult | None = None
+
+        # Grey-box real-SCADA-data metadata (only set when
+        # IdentificationConfig.method == "physical" and the dataset's
+        # input columns don't already match the physical model's own
+        # input layout — see _stage_identification_physical). Needed by
+        # every later stage that evaluates a model against ds.U_test/
+        # Y_test, since self._ss_model/self._reduced then operate in the
+        # physical model's own (wider) input space and in deviation
+        # coordinates around a fitted operating point, not in the
+        # dataset's own scaled columns.
+        self._real_data_mode: bool = False
+        self._phys_model: FirstPrinciplesModel | None = None
+        self._u0: np.ndarray | None = None
+        self._y0: np.ndarray | None = None
+        self._active_outputs: np.ndarray | None = None
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -284,6 +299,26 @@ class BlownFilmPipeline:
                 self._model_path,
             )
 
+        if cached is not None and self._cfg.identification.method == "physical":
+            phys_cfg = self._cfg.physical_model
+            n_phys_inputs = FirstPrinciplesModel(
+                n_extruders=phys_cfg.n_extruders, n_zones=phys_cfg.n_zones,
+                n_components=phys_cfg.n_components, n_die_zones=phys_cfg.n_die_zones,
+                n_ibc=phys_cfg.n_ibc, n_winders=phys_cfg.n_winders,
+            ).n_inputs
+            if self._dataset.U_test.shape[1] != n_phys_inputs and cached.n_inputs == n_phys_inputs:
+                # A grey-box/real-SCADA-data cached model needs a re-solved
+                # operating point (self._u0/_y0) to validate against test
+                # data, which only a fresh identifier.fit() produces —
+                # rebuild rather than validate against a stale/absent one.
+                logger.info(
+                    "Cached model at %s was identified in grey-box/real-"
+                    "SCADA-data mode — skipping the cache accuracy pre-"
+                    "check (requires re-solving the operating point) and "
+                    "rebuilding.", self._model_path,
+                )
+                cached = None
+
         if cached is not None:
             check = self._check_reduction_accuracy(cached)
             logger.info(check.summary())
@@ -307,13 +342,43 @@ class BlownFilmPipeline:
         ModelStore.save(self._reduced, self._model_path)
 
     # ------------------------------------------------------------------
+    def _predict_test(self, reduced: ReducedModel) -> tuple[np.ndarray, np.ndarray, list[str]]:
+        """
+        Return (Y_true, Y_pred, output_cols) on the held-out test set, in
+        whatever coordinate space ``reduced`` actually operates in: for
+        grey-box/physical models fit on real SCADA data
+        (``self._real_data_mode``), that's the physical model's own
+        (wider) input layout and raw physical units, since ``ds.U_test``
+        (dataset-native columns, RobustScaler-scaled) has a different
+        width/units entirely (see ``_stage_identification_physical``);
+        otherwise (N4SID/synthetic data) the scaled dataset columns are
+        used unchanged, matching what the model was identified on.
+        """
+        ds = self._dataset
+        validator = ModelValidator(reduced_model=reduced, output_names=ds.output_cols)
+        if not self._real_data_mode:
+            return ds.Y_test, validator.predict(ds.U_test), ds.output_cols
+
+        U_raw = ds.scaler_u.inverse_transform(ds.U_test)
+        Y_raw = ds.scaler_y.inverse_transform(ds.Y_test)
+        U_model = map_real_inputs_to_model(U_raw, self._phys_model)
+        # reduced's A/B/C/D describe DEVIATION dynamics around
+        # (self._u0, self._y0) — see GreyBoxIdentifier.simulate_windowed.
+        Y_pred_dev = validator.predict(U_model - self._u0[None, :])
+        Y_pred = map_model_outputs_to_real(Y_pred_dev + self._y0[None, :], self._phys_model)
+
+        active = self._active_outputs
+        if active is not None and not np.all(active):
+            output_cols = [c for c, ok in zip(ds.output_cols, active) if ok]
+            return Y_raw[:, active], Y_pred[:, active], output_cols
+        return Y_raw, Y_pred, ds.output_cols
+
+    # ------------------------------------------------------------------
     def _check_reduction_accuracy(self, reduced: ReducedModel) -> AccuracyResult:
         """Evaluate a (candidate) reduced model against held-out test data."""
-        ds        = self._dataset
-        validator = ModelValidator(reduced_model=reduced, output_names=ds.output_cols)
-        Y_pred    = validator.predict(ds.U_test)
+        Y_true, Y_pred, output_cols = self._predict_test(reduced)
         return evaluate_accuracy(
-            ds.Y_test, Y_pred, ds.output_cols,
+            Y_true, Y_pred, output_cols,
             stage="post-reduction",
             threshold=self._cfg.accuracy.min_r2,
             n_states=reduced.n_states,
@@ -407,6 +472,11 @@ class BlownFilmPipeline:
             )
 
         self._ss_model = model
+        self._real_data_mode = identifier.last_real_data_mode
+        self._phys_model = identifier.last_physical_model
+        self._u0 = identifier.last_u0
+        self._y0 = identifier.last_y0
+        self._active_outputs = identifier.last_active_outputs
         avg_r2 = float(np.mean(check.per_output_r2))
         logger.info("Identified model: %r", model)
 
@@ -609,23 +679,22 @@ class BlownFilmPipeline:
     # ------------------------------------------------------------------
     def _stage_validation(self) -> None:
         logger.info("━━━ STAGE 5: Model Validation ━━━")
-        ds        = self._dataset
+        Y_true, Y_pred, output_cols = self._predict_test(self._reduced)
         validator = ModelValidator(
             reduced_model=self._reduced,
-            output_names=ds.output_cols,
+            output_names=output_cols,
         )
-        metrics   = validator.validate(ds.U_test, ds.Y_test)
-        Y_pred    = validator.predict(ds.U_test)
+        metrics = validator.compute_metrics(Y_true, Y_pred)
 
         self._plotter.plot_validation(
-            Y_true=ds.Y_test,
+            Y_true=Y_true,
             Y_pred=Y_pred,
-            output_names=ds.output_cols,
+            output_names=output_cols,
         )
         self._plotter.plot_residuals(
-            Y_true=ds.Y_test,
+            Y_true=Y_true,
             Y_pred=Y_pred,
-            output_names=ds.output_cols,
+            output_names=output_cols,
         )
         self._plotter.plot_metrics_heatmap(metrics)
 

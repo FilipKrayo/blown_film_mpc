@@ -32,6 +32,7 @@ from typing import Optional, Tuple
 import numpy as np
 from scipy.linalg import cholesky, solve_discrete_lyapunov, svd
 from scipy.optimize import minimize
+from tqdm import tqdm
 
 from config import INPUT_COLS, OUTPUT_COLS, PhysicalModelConfig
 from physical_model import FirstPrinciplesModel, stabilise_discrete_matrix
@@ -350,12 +351,29 @@ class GreyBoxIdentifier:
             "max_iter=%d) ...",
             r, r, r, live_idx.size, C_r.shape[0], r, theta0.size, self.cfg.grey_box_max_iter,
         )
+
+        # Progress bar wrapper for objective function evaluations (evaluation
+        # count, not iteration count, since gradient-based methods like
+        # L-BFGS-B call the cost several times per iteration for line search).
+        pbar = tqdm(
+            total=self.cfg.grey_box_max_iter,
+            desc="Grey-box identification",
+            unit="eval",
+            ncols=80,
+        )
+
+        def _cost_with_progress(theta, *args):
+            cost = self._cost_linear(theta, *args)
+            pbar.update(1)
+            return cost
+
         res = minimize(
-            self._cost_linear, theta0,
+            _cost_with_progress, theta0,
             args=(U, Y, r, live_idx, B_r, C_r.shape[0], D_r, u0, y0, model),
             method=self.cfg.grey_box_optimisation_method,
             options={"maxiter": self.cfg.grey_box_max_iter},
         )
+        pbar.close()
         logger.info(
             "Grey-box identification finished after %d evaluations | "
             "cost=%.6g | success=%s", self._n_iter, res.fun, res.success,

@@ -1,4 +1,4 @@
-"""
+﻿"""
 config.py
 =========
 Central configuration module for the Co-Extrusion Blown Film Line
@@ -201,11 +201,11 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_1_DissipationPwr",
     "ST110_VAREx_1_Dos_0_IstLMGewicht",
     "ST110_VAREx_1_Dos_0_Ventil",
-    "ST110_VAREx_1_Dos_1_IstForederrate",
+    "ST110_VAREx_1_Dos_1_IstFoerderrate",
     "ST110_VAREx_1_Dos_2_IstAnteil",
     "ST110_VAREx_1_Dos_2_IstDrehzahl",
     "ST110_VAREx_1_Dos_2_IstDurchsatz",
-    "ST110_VAREx_1_Dos_2_IstForederrate",
+    "ST110_VAREx_1_Dos_2_IstFoerderrate",
     "ST110_VAREx_1_Dos_2_Materialvorwahl",
     "ST110_VAREx_1_Dos_2_SchuettDichte",
     "ST110_VAREx_1_Dos_2_SollAnteil",
@@ -215,7 +215,7 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_1_Dos_3_IstAnteil",
     "ST110_VAREx_1_Dos_3_IstDrehzahl",
     "ST110_VAREx_1_Dos_3_IstDurchsatz",
-    "ST110_VAREx_1_Dos_3_IstForederrate",
+    "ST110_VAREx_1_Dos_3_IstFoerderrate",
     "ST110_VAREx_1_Dos_3_Materialvorwahl",
     "ST110_VAREx_1_Dos_3_SchuettDichte",
     "ST110_VAREx_1_Dos_3_SollAnteil",
@@ -225,7 +225,7 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_1_Dos_4_IstAnteil",
     "ST110_VAREx_1_Dos_4_IstDrehzahl",
     "ST110_VAREx_1_Dos_4_IstDurchsatz",
-    "ST110_VAREx_1_Dos_4_IstForederrate",
+    "ST110_VAREx_1_Dos_4_IstFoerderrate",
     "ST110_VAREx_1_Dos_4_Materialvorwahl",
     "ST110_VAREx_1_Dos_4_SchuettDichte",
     "ST110_VAREx_1_Dos_4_SollAnteil",
@@ -235,7 +235,7 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_1_Dos_5_IstAnteil",
     "ST110_VAREx_1_Dos_5_IstDrehzahl",
     "ST110_VAREx_1_Dos_5_IstDurchsatz",
-    "ST110_VAREx_1_Dos_5_IstForederrate",
+    "ST110_VAREx_1_Dos_5_IstFoerderrate",
     "ST110_VAREx_1_Dos_5_Materialvorwahl",
     "ST110_VAREx_1_Dos_5_SchuettDichte",
     "ST110_VAREx_1_Dos_5_SollAnteil",
@@ -256,11 +256,11 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_2_DissipationPwr",
     "ST110_VAREx_2_Dos_0_IstLMGewicht",
     "ST110_VAREx_2_Dos_0_Ventil",
-    "ST110_VAREx_2_Dos_1_IstForederrate",
+    "ST110_VAREx_2_Dos_1_IstFoerderrate",
     "ST110_VAREx_2_Dos_2_IstAnteil",
     "ST110_VAREx_2_Dos_2_IstDrehzahl",
     "ST110_VAREx_2_Dos_2_IstDurchsatz",
-    "ST110_VAREx_2_Dos_2_IstForederrate",
+    "ST110_VAREx_2_Dos_2_IstFoerderrate",
     "ST110_VAREx_2_Dos_2_Materialvorwahl",
     "ST110_VAREx_2_Dos_2_SchuettDichte",
     "ST110_VAREx_2_Dos_2_SollAnteil",
@@ -270,7 +270,7 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_2_Dos_3_IstAnteil",
     "ST110_VAREx_2_Dos_3_IstDrehzahl",
     "ST110_VAREx_2_Dos_3_IstDurchsatz",
-    "ST110_VAREx_2_Dos_3_IstForederrate",
+    "ST110_VAREx_2_Dos_3_IstFoerderrate",
     "ST110_VAREx_2_Dos_3_Materialvorwahl",
     "ST110_VAREx_2_Dos_3_SchuettDichte",
     "ST110_VAREx_2_Dos_3_SollAnteil",
@@ -280,7 +280,7 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_2_Dos_4_IstAnteil",
     "ST110_VAREx_2_Dos_4_IstDrehzahl",
     "ST110_VAREx_2_Dos_4_IstDurchsatz",
-    "ST110_VAREx_2_Dos_4_IstForederrate",
+    "ST110_VAREx_2_Dos_4_IstFoerderrate",
     "ST110_VAREx_2_Dos_4_Materialvorwahl",
     "ST110_VAREx_2_Dos_4_SchuettDichte",
     "ST110_VAREx_2_Dos_4_SollAnteil",
@@ -290,7 +290,7 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_2_Dos_5_IstAnteil",
     "ST110_VAREx_2_Dos_5_IstDrehzahl",
     "ST110_VAREx_2_Dos_5_IstDurchsatz",
-    "ST110_VAREx_2_Dos_5_IstForederrate",
+    "ST110_VAREx_2_Dos_5_IstFoerderrate",
     "ST110_VAREx_2_Dos_5_Materialvorwahl",
     "ST110_VAREx_2_Dos_5_SchuettDichte",
     "ST110_VAREx_2_Dos_5_SollAnteil",
@@ -311,11 +311,11 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_3_DissipationPwr",
     "ST110_VAREx_3_Dos_0_IstLMGewicht",
     "ST110_VAREx_3_Dos_0_Ventil",
-    "ST110_VAREx_3_Dos_1_IstForederrate",
+    "ST110_VAREx_3_Dos_1_IstFoerderrate",
     "ST110_VAREx_3_Dos_2_IstAnteil",
     "ST110_VAREx_3_Dos_2_IstDrehzahl",
     "ST110_VAREx_3_Dos_2_IstDurchsatz",
-    "ST110_VAREx_3_Dos_2_IstForederrate",
+    "ST110_VAREx_3_Dos_2_IstFoerderrate",
     "ST110_VAREx_3_Dos_2_Materialvorwahl",
     "ST110_VAREx_3_Dos_2_SchuettDichte",
     "ST110_VAREx_3_Dos_2_SollAnteil",
@@ -325,7 +325,7 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_3_Dos_3_IstAnteil",
     "ST110_VAREx_3_Dos_3_IstDrehzahl",
     "ST110_VAREx_3_Dos_3_IstDurchsatz",
-    "ST110_VAREx_3_Dos_3_IstForederrate",
+    "ST110_VAREx_3_Dos_3_IstFoerderrate",
     "ST110_VAREx_3_Dos_3_Materialvorwahl",
     "ST110_VAREx_3_Dos_3_SchuettDichte",
     "ST110_VAREx_3_Dos_3_SollAnteil",
@@ -335,7 +335,7 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_3_Dos_4_IstAnteil",
     "ST110_VAREx_3_Dos_4_IstDrehzahl",
     "ST110_VAREx_3_Dos_4_IstDurchsatz",
-    "ST110_VAREx_3_Dos_4_IstForederrate",
+    "ST110_VAREx_3_Dos_4_IstFoerderrate",
     "ST110_VAREx_3_Dos_4_Materialvorwahl",
     "ST110_VAREx_3_Dos_4_SchuettDichte",
     "ST110_VAREx_3_Dos_4_SollAnteil",
@@ -345,7 +345,7 @@ ALL_COLUMNS: List[str] = [
     "ST110_VAREx_3_Dos_5_IstAnteil",
     "ST110_VAREx_3_Dos_5_IstDrehzahl",
     "ST110_VAREx_3_Dos_5_IstDurchsatz",
-    "ST110_VAREx_3_Dos_5_IstForederrate",
+    "ST110_VAREx_3_Dos_5_IstFoerderrate",
     "ST110_VAREx_3_Dos_5_Materialvorwahl",
     "ST110_VAREx_3_Dos_5_SchuettDichte",
     "ST110_VAREx_3_Dos_5_SollAnteil",
@@ -716,9 +716,9 @@ class PhysicalModelConfig:
     # physical model is linearised ONCE (at the real-data mean operating
     # point), reduced to this order via balanced truncation (HSV energy
     # analysis on the real dataset showed a knee around n=5, capturing
-    # ~88% of Hankel-singular-value energy — 10 keeps a safety margin),
+    # ~88% of Hankel-singular-value energy — 15 keeps a wider safety margin),
     # then A/B/C (not D, which is n-independent) are optimised directly.
-    grey_box_reduced_order: int = 10
+    grey_box_reduced_order: int = 15
 
     # Singular perturbation (README's "Time-scale separation" pipeline
     # step — eliminates states faster than the MPC sample rate can

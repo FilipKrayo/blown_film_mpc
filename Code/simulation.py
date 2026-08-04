@@ -141,6 +141,11 @@ class ModelValidator:
         List of ValidationMetrics, one per output channel.
         """
         Y_pred = self._simulate(U_test)
+        return self.compute_metrics(Y_test, Y_pred)
+
+    # ------------------------------------------------------------------
+    def compute_metrics(self, Y_test: np.ndarray, Y_pred: np.ndarray) -> List[ValidationMetrics]:
+        """Compute per-output metrics for an already-predicted Y_pred (e.g. from `predict()`)."""
         n_out  = min(Y_test.shape[1], Y_pred.shape[1])
         metrics: List[ValidationMetrics] = []
 
