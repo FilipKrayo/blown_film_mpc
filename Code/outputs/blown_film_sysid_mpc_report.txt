@@ -4,87 +4,88 @@ CO-EXTRUSION BLOWN FILM LINE — SYSTEM ID & MPC REPORT
 ────────────────────────────────────────────────────────────
   1. Data Summary
 ────────────────────────────────────────────────────────────
-Source        : synthetic
-Train samples : 2100
-Test  samples : 900
+Source        : ../extrusion.csv
+Train samples : 113477
+Test  samples : 48633
 Inputs  n_u   : 26
 Outputs n_y   : 22
-Sampling time : 3.0 s
+Sampling time : 120.0 s
 
 ────────────────────────────────────────────────────────────
-  2. System Identification (N4SID)
+  2. System Identification (Grey-Box / Physical)
 ────────────────────────────────────────────────────────────
-Model order   : 8
-Stable        : True
-Spectral rho  : 0.7508
-Training R²   : 0.7082
-Param opt     : True
+Model order       : 10 (reduced via balanced truncation)
+Stable            : True
+Spectral rho      : 0.8500
+Training R² (avg) : -139340869808476304.0000
+Grey-box cost     : 1e+08
+Grey-box success  : True (501 evaluations)
+Live inputs opt.  : 18
+Singular pert.    : disabled
+Accuracy gate     : [FAIL] post-identification: worst-case R²=-905017503148921216.0000 (output='ST113_VARWdSpTens', n_states=10, required>=0.9500)
 
 ────────────────────────────────────────────────────────────
   3. Model Order Reduction
 ────────────────────────────────────────────────────────────
-Full order    : 8
-Reduced order : 7
-Augmented dim : 29
-Reduction     : 12.5%
-Ts            : 3.0 s
+Full order    : 10
+Reduced order : 9
+Augmented dim : 31
+Reduction     : 10.0%
+Ts            : 120.0 s
+Accuracy gate : [FAIL] post-reduction: worst-case R²=-1133373230013577728.0000 (output='ST113_VARWdSpTens', n_states=9, required>=0.9500)
 
 ────────────────────────────────────────────────────────────
   4. Kalman Filter
 ────────────────────────────────────────────────────────────
-Augmented state dim : 29
+Augmented state dim : 31
 Process noise Q     : 1.00e-03 × I
 Measurement noise R : 1.00e-02 × I
-Gain shape          : (29, 22)
+Gain shape          : (31, 22)
 
 ────────────────────────────────────────────────────────────
   5. Model Validation (Test Set)
 ────────────────────────────────────────────────────────────
-Avg R²    : 0.6714
-Avg NRMSE : 0.5678
+Avg R²    : -160410364323921472.0000
+Avg NRMSE : 66061258922380120.0000
 
 Output                                              R²    NRMSE          MSE
 ---------------------------------------------------------------------------
-y_0                                             0.7195   0.5296     0.189071
-y_1                                             0.7327   0.5170     0.157650
-y_2                                             0.6870   0.5595     0.209821
-y_3                                             0.7403   0.5097     0.161316
-y_4                                             0.7571   0.4929     0.117086
-y_5                                             0.4726   0.7262     0.243048
-y_6                                             0.5000   0.7071     0.232347
-y_7                                             0.7713   0.4782     0.170046
-y_8                                             0.5628   0.6612     0.249143
-y_9                                             0.6710   0.5736     0.179789
-y_10                                            0.7851   0.4636     0.106610
-y_11                                            0.6986   0.5490     0.149506
-y_12                                            0.7605   0.4894     0.126591
-y_13                                            0.5263   0.6882     0.285692
-y_14                                            0.7698   0.4798     0.146552
-y_15                                            0.6254   0.6120     0.161827
-y_16                                            0.7682   0.4815     0.134477
-y_17                                            0.5646   0.6598     0.249151
-y_18                                            0.6142   0.6211     0.224100
-y_19                                            0.6875   0.5590     0.161489
-y_20                                            0.6703   0.5742     0.163623
-y_21                                            0.6866   0.5598     0.168645
+ST110_VAREx_1_SDickeIst                        -3.2699   2.0664    77.712885
+ST110_VAREx_2_SDickeIst                        -0.0627   1.0309    84.062405
+ST110_VAREx_3_SDickeIst                        -3.5750   2.1389    79.676204
+ST110_VARExtr_1_Massetemperatur               -3989.4874  63.1703 34247.902145
+ST110_VARExtr_2_Massetemperatur               -2147.4439  46.3513 33858.866983
+ST110_VARExtr_3_Massetemperatur               -37.7531   6.2252  1361.970370
+ST110_VARExtr_1_druck_1_IstP                   -9.9027   3.3019 104146.377445
+ST110_VARExtr_2_druck_1_IstP                   -6.4666   2.7325 102268.203418
+ST110_VARExtr_3_druck_1_IstP                  -12.5182   3.6767 118706.186596
+ST110_VARIBC_1_Ist_n_Calc                     -41.9207   6.5514  3993.635574
+ST110_VARIBC_2_Ist_n_Calc                     -34.6284   5.9690  3911.470888
+ST110_VARIBC_3_Ist_n_Calc                     -12.7880   3.7132  2573.227508
+ST112_VARAbzug_1_IstZu                        -805719459336195456.0000 897618768.0522 48373976435909504.000000
+ST113_VARRemainingLen                         -118642327.0574 10892.3059 290003591997475.500000
+ST113_VARWdSpTens                             -1133373230013577728.0000 1064600032.8222 351927295774257512448.000000
+ST114_VARDiaRollRc                              0.0000 1189102657666795520.0000 1413965130470236416.000000
+ST114_VARRemainingLen                         -172936624.6088 13150.5371 290001094721388.625000
+ST114_VARWdSpTens                             -948293868189228032.0000 973803813.9657 377364604277928624128.000000
 
 ────────────────────────────────────────────────────────────
   6. MPC Configuration
 ────────────────────────────────────────────────────────────
 Prediction horizon Np : 20
 Control horizon Nc    : 8
-Sampling time Ts      : 3.0 s
-Prediction window     : 60 s
+Sampling time Ts      : 120.0 s
+Prediction window     : 2400 s
 QP size               : 208 variables
 Solver                : OSQP (warm-start)
-MPC weights           : fixed config defaults (not optimised)
+MPC weights           : optimised now (Nelder-Mead) and cached
 
 ────────────────────────────────────────────────────────────
   7. Closed-Loop Simulation
 ────────────────────────────────────────────────────────────
-Steps         : 5
-Duration      : 15 s
-ISE           : 0.1659
-ITAE          : 12.7227
-Mean MSE      : 0.000503
-Mean QP cost  : 0.1513
+Steps         : 300
+Duration      : 36000 s
+ISE           : 2161222062330.6001
+ITAE          : 55263378071.6640
+Mean MSE      : 2728815.735266
+Mean QP cost  : 179.0155

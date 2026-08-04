@@ -13,7 +13,3 @@ saved/
 
 *.txt
 *.log
-
-_smoke_pipeline2.py
-_smoke_reduction.py
-_smoke_sp.py

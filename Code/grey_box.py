@@ -244,6 +244,9 @@ class GreyBoxIdentifier:
         self.last_x0: Optional[np.ndarray] = None
         self.last_u0: Optional[np.ndarray] = None
         self.last_y0: Optional[np.ndarray] = None
+        #: Reduced-order, discrete-time offset carrying forward any leftover
+        #: (x0, u0) equilibrium residual — see simulate_windowed()'s docstring.
+        self.last_offset: Optional[np.ndarray] = None
 
     # ------------------------------------------------------------------
     def fit(self, U: np.ndarray, Y: np.ndarray) -> Tuple[StateSpaceModel, GreyBoxResult, np.ndarray]:
@@ -311,14 +314,34 @@ class GreyBoxIdentifier:
         # (the model's nominal web-tension input was 500-3000x smaller
         # than real-data deviations, putting the linearisation nowhere
         # near the region it needed to be valid in).
+        #
+        # The coordinatewise mean itself isn't necessarily a physically
+        # realisable input combination (e.g. it can blend distinct
+        # operating regimes that were never simultaneously true, or
+        # average a bimodal setpoint into a value never commanded) — use
+        # the medoid instead: the actual observed row of U closest to
+        # that mean (normalised per-column, since inputs span very
+        # different units/scales), guaranteeing u0 is something the real
+        # process genuinely did.
         model = self.model
         self.last_physical_model = model
-        u0 = U.mean(axis=0)
+        u_mean = U.mean(axis=0)
+        u_std = np.maximum(np.std(U, axis=0), 1.0e-9)
+        medoid_idx = int(np.argmin(np.linalg.norm((U - u_mean) / u_std, axis=1)))
+        u0 = U[medoid_idx]
         x0_guess = model.nominal_state_guess()
         x0 = model.solve_operating_point(u0, x0_guess)
         A_c, B_c, C_c, D_c = model.linearise(x0, u0)
         A_d, B_d, C_d, D_d = model.discretise(A_c, B_c, C_c, D_c, self.Ts)
         y0 = model.outputs(x0, u0)
+
+        # x0 may not be an exact equilibrium (solve_operating_point logs a
+        # warning when it isn't) — rather than silently assuming
+        # dynamics(x0, u0) == 0 (which turns any leftover residual into an
+        # unmodelled constant drift in every simulated window below), carry
+        # it forward as an explicit discrete-time offset term.
+        f0_scaled = model.dynamics(x0, u0) / np.maximum(np.abs(x0), 1.0)
+        offset_d = model.discretise_offset(A_c, f0_scaled, self.Ts)
 
         # Inputs the real dataset never actually varies (unmapped columns
         # held at a constant nominal value by map_real_inputs_to_model, see
@@ -335,7 +358,8 @@ class GreyBoxIdentifier:
         )
 
         r = min(self.reduced_order, A_d.shape[0] - 1)
-        A_r, B_r, C_r, D_r, hsv = self._balanced_truncate(A_d, B_d, C_d, D_d, r)
+        A_r, B_r, C_r, D_r, hsv, T_i = self._balanced_truncate(A_d, B_d, C_d, D_d, r)
+        offset_r = T_i @ offset_d
         logger.info(
             "Grey-box: reduced full order %d -> %d states via balanced "
             "truncation (retained %.2f%% HSV energy).",
@@ -369,7 +393,7 @@ class GreyBoxIdentifier:
 
         res = minimize(
             _cost_with_progress, theta0,
-            args=(U, Y, r, live_idx, B_r, C_r.shape[0], D_r, u0, y0, model),
+            args=(U, Y, r, live_idx, B_r, C_r.shape[0], D_r, u0, y0, model, offset_r),
             method=self.cfg.grey_box_optimisation_method,
             options={"maxiter": self.cfg.grey_box_max_iter},
         )
@@ -407,12 +431,14 @@ class GreyBoxIdentifier:
         self.last_x0 = x0
         self.last_u0 = u0
         self.last_y0 = y0
+        self.last_offset = offset_r
         return ss, result, U
 
     # ------------------------------------------------------------------
     @staticmethod
     def simulate_windowed(
         ss: StateSpaceModel, U: np.ndarray, u0: np.ndarray, y0: np.ndarray, window_steps: int,
+        offset: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Simulate a deviation-form ``StateSpaceModel`` (linearised around
@@ -425,9 +451,20 @@ class GreyBoxIdentifier:
         counterparts get periodically reset in a way this model has no
         mechanism for, so an unbounded continuous rollout diverges
         regardless of parameter scales.
+
+        ``offset`` (reduced-order, discrete-time) carries forward any
+        leftover ``x0``/``u0`` equilibrium residual — see ``fit()`` —
+        as a constant forcing term, via an extra input column driven by
+        a constant unit input, instead of silently assuming it's zero.
         """
         U_dev = U - u0[None, :]
         T = U_dev.shape[0]
+        if offset is not None:
+            ss = StateSpaceModel(
+                A=ss.A, B=np.hstack([ss.B, offset[:, None]]), C=ss.C,
+                D=np.hstack([ss.D, np.zeros((ss.C.shape[0], 1))]), Ts=ss.Ts,
+            )
+            U_dev = np.hstack([U_dev, np.ones((T, 1))])
         Y_hat = np.empty((T, y0.shape[0]))
         for start in range(0, T, window_steps):
             end = min(start + window_steps, T)
@@ -443,7 +480,7 @@ class GreyBoxIdentifier:
     @classmethod
     def _balanced_truncate(
         cls, A: np.ndarray, B: np.ndarray, C: np.ndarray, D: np.ndarray, r: int,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Reduce ``(A, B, C, D)`` to ``r`` states via balanced truncation
         (mirrors ``model_reduction.py``'s ``_balanced_truncation``). The
@@ -483,7 +520,7 @@ class GreyBoxIdentifier:
         B_r = T_i @ B
         C_r = C @ T_f
         D_r = D.copy()
-        return A_r, B_r, C_r, D_r, S
+        return A_r, B_r, C_r, D_r, S, T_i
 
     @staticmethod
     def _pack(A_r: np.ndarray, B_live: np.ndarray, C_r: np.ndarray) -> np.ndarray:
@@ -513,6 +550,7 @@ class GreyBoxIdentifier:
         u0: np.ndarray,
         y0: np.ndarray,
         model: FirstPrinciplesModel,
+        offset: np.ndarray,
     ) -> float:
         self._n_iter += 1
         A_r, B_live, C_r = self._unpack(theta, r, live_idx.size, p)
@@ -530,7 +568,7 @@ class GreyBoxIdentifier:
         A_sim = stabilise_discrete_matrix(A_r, threshold=0.98) if rho > 0.98 else A_r
 
         ss = StateSpaceModel(A=A_sim, B=B_r, C=C_r, D=D_r, Ts=self.Ts)
-        Y_hat = self.simulate_windowed(ss, U, u0, y0, self._window_steps)
+        Y_hat = self.simulate_windowed(ss, U, u0, y0, self._window_steps, offset)
         if self._real_data_mode:
             Y_hat = map_model_outputs_to_real(Y_hat, model)
         if not np.all(np.isfinite(Y_hat)):

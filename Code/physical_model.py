@@ -981,31 +981,32 @@ class FirstPrinciplesModel:
     # Operating point (README §2)
     # ------------------------------------------------------------------
 
-    def solve_operating_point(
-        self, u0: Optional[np.ndarray] = None, x0_guess: Optional[np.ndarray] = None
-    ) -> np.ndarray:
+    def _solve_operating_point_step(
+        self, u: np.ndarray, x_guess: np.ndarray
+    ) -> Tuple[np.ndarray, float, bool, str]:
         """
-        Newton-Raphson solve of f(x0, u0) = 0 for the steady-state x0
-        (README §2). State components span many orders of magnitude
-        (pressures ~1e7, radii ~0.1, lengths ~0/1e3, ...), so the
-        residual is solved in variables scaled by the nominal guess's
-        own magnitude — unscaled root-finding over such a wide dynamic
-        range converges poorly / diverges.
+        Single Newton-Raphson solve of f(x, u) = 0 for one fixed input
+        ``u``, warm-started from ``x_guess``. Factored out of
+        ``solve_operating_point`` so it can be re-used, warm-started,
+        across continuation steps.
+
+        State components span many orders of magnitude (pressures
+        ~1e7, radii ~0.1, lengths ~0/1e3, ...), so the residual is
+        solved in variables scaled by the guess's own magnitude —
+        unscaled root-finding over such a wide dynamic range converges
+        poorly / diverges.
 
         An unconstrained solve can wander to wildly non-physical
         magnitudes (observed: >1e14) when it can't find an exact root,
         which then corrupts anything derived from the operating
         point's own scale (state normalisation in ``linearise()``,
         singular perturbation in ``eliminate_fast_states``). Rather
-        than a bounded solver (much slower per call — this runs inside
-        every grey-box optimisation iteration), the result is clamped
-        to a generous multiple of the guess magnitude after the fact:
-        cheap, and just as effective at preventing runaway divergence.
+        than a bounded solver (much slower per call), the result is
+        clamped to a generous multiple of the guess magnitude after
+        the fact: cheap, and just as effective at preventing runaway
+        divergence.
         """
-        u0 = self.nominal_inputs() if u0 is None else u0
-        x0_guess = self.nominal_state_guess() if x0_guess is None else x0_guess
-
-        scale = np.maximum(np.abs(x0_guess), 1.0)
+        scale = np.maximum(np.abs(x_guess), 1.0)
 
         # L_job/L_w (job-length and per-winder roll-length counters) and
         # m_dos (accumulated dosed mass) are pure integrators: their xdot
@@ -1025,11 +1026,11 @@ class FirstPrinciplesModel:
         free = ~excluded
 
         def scaled_residual(z_free: np.ndarray) -> np.ndarray:
-            z = x0_guess / scale
+            z = x_guess / scale
             z[free] = z_free
-            return (self.dynamics(z * scale, u0) * scale)[free]
+            return (self.dynamics(z * scale, u) * scale)[free]
 
-        z0 = x0_guess / scale
+        z0 = x_guess / scale
         result = root(
             scaled_residual, z0[free], method="hybr",
             options={"maxfev": 20000},
@@ -1042,14 +1043,50 @@ class FirstPrinciplesModel:
                 "(max %.3gx the nominal guess) — clamping to +/-%.0fx.",
                 float(np.max(np.abs(result.x))), z_bound,
             )
-        z = x0_guess / scale
+        z = x_guess / scale
         z[free] = z_free_clamped
-        x0 = z * scale
-        residual_norm = float(np.linalg.norm(self.dynamics(x0, u0)[free]))
-        if not result.success or residual_norm > 1.0:
+        x = z * scale
+        residual_norm = float(np.linalg.norm(self.dynamics(x, u)[free]))
+        return x, residual_norm, bool(result.success), str(result.message)
+
+    def solve_operating_point(
+        self,
+        u0: Optional[np.ndarray] = None,
+        x0_guess: Optional[np.ndarray] = None,
+        n_continuation_steps: int = 8,
+    ) -> np.ndarray:
+        """
+        Newton-Raphson solve of f(x0, u0) = 0 for the steady-state x0
+        (README §2).
+
+        ``x0_guess`` (default ``nominal_state_guess()``) is only a
+        mass/force-balanced guess relative to ``nominal_inputs()`` —
+        when ``u0`` differs substantially from that (e.g. a real
+        dataset's operating input), a single cold Newton solve from
+        that guess can be far from ``u0``'s own equilibrium and fail
+        to converge. Instead, ``u`` is stepped in
+        ``n_continuation_steps`` increments from ``nominal_inputs()``
+        to ``u0``, re-solving at each step warm-started from the
+        previous step's (already-converged) solution — every
+        individual solve then starts close to its own root.
+        """
+        u0 = self.nominal_inputs() if u0 is None else u0
+        x0_guess = self.nominal_state_guess() if x0_guess is None else x0_guess
+
+        u_start = self.nominal_inputs()
+        if np.allclose(u0, u_start):
+            x0, residual_norm, success, message = self._solve_operating_point_step(u0, x0_guess)
+        else:
+            x = x0_guess
+            for alpha in np.linspace(0.0, 1.0, n_continuation_steps + 1)[1:]:
+                u_step = u_start + alpha * (u0 - u_start)
+                x, residual_norm, success, message = self._solve_operating_point_step(u_step, x)
+            x0 = x
+
+        if not success or residual_norm > 1.0:
             logger.warning(
                 "Operating-point solve did not fully converge "
-                "(unscaled residual norm=%.3e): %s", residual_norm, result.message,
+                "(unscaled residual norm=%.3e): %s", residual_norm, message,
             )
         return x0
 
@@ -1127,6 +1164,23 @@ class FirstPrinciplesModel:
         A_d = expM[:n, :n]
         B_d = expM[:n, n:]
         return A_d, B_d, C_c, D_c
+
+    @staticmethod
+    def discretise_offset(A_c: np.ndarray, f0_scaled: np.ndarray, Ts: float) -> np.ndarray:
+        """
+        Discrete-time equivalent of a constant continuous forcing term
+        ``f0_scaled`` (the residual ``dynamics(x0, u0)`` left over when
+        ``x0`` isn't an exact equilibrium, in the same scaled state
+        basis as ``linearise()``), via the same van Loan/matrix-
+        exponential trick ``discretise()`` uses for ``B_c`` — treat it
+        as an extra input column driven by a constant unit input.
+        """
+        n = A_c.shape[0]
+        M = np.zeros((n + 1, n + 1))
+        M[:n, :n] = A_c
+        M[:n, n] = f0_scaled
+        expM = expm(M * Ts)
+        return expM[:n, n]
 
     # ------------------------------------------------------------------
     # Convenience: full pipeline to a StateSpaceModel

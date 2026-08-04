@@ -440,6 +440,7 @@ class BlownFilmPipeline:
         )
         Y_hat = GreyBoxIdentifier.simulate_windowed(
             model, U_model, identifier.last_u0, identifier.last_y0, window_steps,
+            identifier.last_offset,
         )
         if identifier.last_real_data_mode:
             # Model outputs are in the physical model's own order/units
