@@ -30,6 +30,16 @@ from config import ALL_COLUMNS, INPUT_COLS, OUTPUT_COLS, DataConfig, PhysicalMod
 
 logger = logging.getLogger(__name__)
 
+# No extruder running/screw-speed status flag is exported anywhere in the
+# real SCADA data (checked against extrusion_data_legend.xlsx), so melt
+# pressure is the only available proxy for "is this extruder actively
+# extruding" -- used by _clean() to drop idle/startup rows.
+_EXTRUDER_PRESSURE_COLS = [
+    "ST110_VARExtr_1_druck_1_IstP",
+    "ST110_VARExtr_2_druck_1_IstP",
+    "ST110_VARExtr_3_druck_1_IstP",
+]
+
 
 # ---------------------------------------------------------------------------
 # Data containers
@@ -130,7 +140,6 @@ class SyntheticDataGenerator:
         pc = self._phys_cfg
         model = FirstPrinciplesModel(
             n_extruders=pc.n_extruders, n_zones=pc.n_zones,
-            n_components=pc.n_components, n_die_zones=pc.n_die_zones,
             n_ibc=pc.n_ibc, n_winders=pc.n_winders,
         )
         tau_threshold = (
@@ -284,6 +293,14 @@ class DataManager:
         z = (df[num_cols] - df[num_cols].mean()) / (df[num_cols].std() + 1e-9)
         mask = (np.abs(z) < self._cfg.outlier_zscore).all(axis=1)
         df   = df.loc[mask].reset_index(drop=True)
+
+        # Idle/startup rows (any extruder not actively extruding) contaminate
+        # the fit -- see _EXTRUDER_PRESSURE_COLS for why pressure is used as
+        # the running-status proxy.
+        pressure_cols = [c for c in _EXTRUDER_PRESSURE_COLS if c in df.columns]
+        if pressure_cols:
+            running = (df[pressure_cols] >= self._cfg.min_running_pressure_bar).all(axis=1)
+            df = df.loc[running].reset_index(drop=True)
 
         logger.info("After cleaning: %d rows remain.", len(df))
         return df

@@ -57,6 +57,14 @@ _DEG_C_TO_K = 273.15
 _BAR_TO_PA = 1.0e5
 _IBC_PCT_FULL_SCALE = 1200.0   # rpm treated as the blower's "100%" (matches nominal_inputs' N_ibc_set)
 
+# ST112_VARAbzug_1_IstZu (real OUTPUT_COLS index 15) is a unitless
+# "haul-off close" status per extrusion_data_legend.xlsx, NOT an actual
+# speed measurement (no real haul-off actual-speed tag is exported at
+# all) -- mapped against the model's v_haul output anyway for lack of a
+# better real column, but excluded from the fit/accuracy comparison in
+# GreyBoxIdentifier.fit() since it's the wrong physical quantity.
+_REAL_HAULOFF_ISTZU_OUTPUT_IDX = 15
+
 
 def _tension_force_per_stress(model: FirstPrinciplesModel) -> float:
     """film_thickness(nominal) * film_width: converts a web stress [Pa] to a tension force [N]."""
@@ -69,9 +77,12 @@ def _tension_force_per_stress(model: FirstPrinciplesModel) -> float:
 # ---------------------------------------------------------------------------
 
 # Index of each real INPUT_COLS entry that has a direct FirstPrinciplesModel
-# input counterpart. Entries with no physical-model equivalent (thickness
-# setpoints — the model has no direct SDickeSoll input) are left unmapped;
-# those model inputs are held at their nominal value instead.
+# input counterpart. Every remaining FirstPrinciplesModel input has one
+# (the model's former dosing/die-head inputs, which never did, have been
+# removed entirely — see physical_model.py's module docstring). The only
+# real INPUT_COLS entries with no model counterpart at all are the 3
+# layer-thickness setpoints (SDickeSoll, indices 12-14) — the model has no
+# direct thickness-setpoint input — which are simply not read below.
 _REAL_ZONE_SETPOINT_IDX = list(range(0, 12))     # 3 extruders x 4 zones
 _REAL_IBC_SETPOINT_IDX = list(range(15, 18))
 _REAL_COOLING_SETPOINT_IDX = list(range(18, 21))
@@ -85,17 +96,15 @@ def map_real_inputs_to_model(U_real: np.ndarray, model: FirstPrinciplesModel) ->
     Map real SCADA input columns (``config.INPUT_COLS`` order) onto the
     ``FirstPrinciplesModel`` input vector, converting engineering units
     (per ``extrusion_data_legend.xlsx``) to the model's SI/native units.
-    Real signals without a direct physical-model counterpart (dosing
-    feed/proportion setpoints, die zone setpoints, layer-thickness
-    setpoints) are held at the model's nominal value for the whole
-    horizon — a documented simplification, not a full bidirectional
-    mapping.
+    The 3 real layer-thickness setpoints (SDickeSoll) have no physical-
+    model counterpart and are simply not read — every other model input
+    is mapped from real data below (no "held at nominal" fallback).
     """
     assert U_real.shape[1] == len(INPUT_COLS), (
         f"expected {len(INPUT_COLS)} real input columns, got {U_real.shape[1]}"
     )
     T = U_real.shape[0]
-    U_model = np.tile(model.nominal_inputs(), (T, 1))
+    U_model = np.zeros((T, model.n_inputs))
 
     U_model[:, model.sl_u_T_sp] = U_real[:, _REAL_ZONE_SETPOINT_IDX] + _DEG_C_TO_K
     U_model[:, model.sl_u_N_ibc_set] = U_real[:, _REAL_IBC_SETPOINT_IDX] / 100.0 * _IBC_PCT_FULL_SCALE
@@ -265,7 +274,7 @@ class GreyBoxIdentifier:
             logger.info(
                 "Input dimension (%d) does not match the physical model "
                 "(%d) — mapping real SCADA columns onto the model's "
-                "inputs (unmapped ones held at nominal value).",
+                "inputs (see map_real_inputs_to_model).",
                 U.shape[1], self.model.n_inputs,
             )
             U = map_real_inputs_to_model(U, self.model)
@@ -280,11 +289,13 @@ class GreyBoxIdentifier:
         # into a spurious, enormous cost contribution unrelated to fit quality.
         y_std = np.std(Y, axis=0)
         self._active_outputs = y_std > 1.0e-9 if self._real_data_mode else np.ones(Y.shape[1], dtype=bool)
+        if self._real_data_mode:
+            self._active_outputs[_REAL_HAULOFF_ISTZU_OUTPUT_IDX] = False
         if self._real_data_mode and not np.all(self._active_outputs):
             logger.warning(
-                "Excluding %d zero-variance real output column(s) from the "
-                "grey-box cost/accuracy comparison (no fittable signal): "
-                "indices %s",
+                "Excluding %d real output column(s) from the grey-box cost/"
+                "accuracy comparison (zero-variance and/or wrong-physical-"
+                "quantity, e.g. IstZu): indices %s",
                 int(np.sum(~self._active_outputs)),
                 list(np.nonzero(~self._active_outputs)[0]),
             )

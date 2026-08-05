@@ -26,40 +26,34 @@ Pipeline of operations provided by ``FirstPrinciplesModel``
 
 State / input / output layout
 ------------------------------
-Multiplicities (n_extruders, n_zones_per_extruder, n_components,
-n_die_zones, n_ibc, n_winders) are configurable. At the README's
-illustrative configuration (4, 8, 5, 7, 3, 2) the state count is
-exactly 146, matching README §10 "Full-Order State Vector":
+Multiplicities (n_extruders, n_zones_per_extruder, n_ibc, n_winders)
+are configurable. The README's illustrative configuration/state table
+(§10 "Full-Order State Vector", 146 states at (4, 8, 5, 7, 3, 2))
+included a Dosing and a Die head subsystem that this implementation
+no longer has (see below) — it is kept here purely as a historical
+reference to the README's narrative, not as a description of this
+file's current behaviour.
 
-    Extruder   (T_k,j, P_k, mdot_out_k, T_melt_k)       : 44
-    Dosing     (m_i,k, N_dos_i,k, phi_i,k)               : 60
-    Die head   (T_die_j, u_die_j)                        : 14
-    Bubble     (R, h_film, P_bub, v_z, T_f, sigma_zz)    : 6
-    Cooling    (T_IBC_l, N_IBC_l, T_cool_l)               : 9
-    Haul-off   (v_haul, sigma_haul, L_job)                : 3
-    Winders    (omega_drum_w, R_roll_w, L_w,
-                sigma_web_w, T_drive_w)                   : 10
-    ------------------------------------------------------------
-    Total                                                 : 146
-
-The README documents illustrative I/O totals (u in R^96, y in R^58)
-for the full observability/controllability discussion, but does not
-enumerate an exhaustive input/output list. The vectors implemented
-here are derived directly from the manipulated variables and measured
-quantities that actually appear in the per-subsystem equations; their
-counts (90 inputs, 22 outputs at the default multiplicities) are not
-forced to match 96/58 exactly.
+The dosing (per-component feed-rate/mixing) and die-head subsystems
+present in earlier revisions of this model have been REMOVED
+entirely: their manipulated inputs (mdot_feed, phi_set, T_sp_die —
+37 of the previous 60 inputs at the default multiplicities) have no
+counterpart anywhere in the real SCADA export (extrusion.csv /
+extrusion_data_legend.xlsx), so they were always held at a constant
+nominal value and never actually identified against data; none of
+their states fed any measured output either. The extruder's inflow
+rate and melt density are now fixed nominal constants
+(``mdot_extruder_nom``, ``rho_melt``) instead of being tracked as
+states. At the default multiplicities (3, 4, 3, 2) this model now has
+23 inputs (all with a real-data counterpart, up to a units/engineering
+conversion — see grey_box.py's ``map_real_inputs_to_model``) and 25
+outputs.
 
 Deliberate simplifications relative to the README's narrative (this
 repository explicitly treats full PDE solving — moving mesh, FEM,
 implicit time-stepping — as out of scope; see README §12 note):
   * Extruder zone heaters are proportional-only (no separate actuator
-    state), keeping exactly 11 states/extruder. Die zones DO get a
-    separate first-order actuator state, matching the README §10
-    table's "2 states per die zone".
-  * The dosing PI law is simplified to a proportional + relaxation
-    form (the literal nested integral in README §2.3 would need a 4th
-    per-component state not present in the §10 table).
+    state), keeping exactly 11 states/extruder.
   * The bubble is lumped (0-D): no ``-v_z ∂R/∂z`` convection term.
     Strain rates are algebraic proxies of (v_z, P_bub) relative to the
     nominal operating point rather than re-derived from a moving mesh.
@@ -118,6 +112,12 @@ class PhysicalParameters:
     outlet_relax_tau: np.ndarray
     melt_temp_relax_tau: np.ndarray
     screw_speed_nom: np.ndarray
+    #: Fixed nominal per-extruder mass throughput (kg/s) — replaces the
+    #: old dosing-subsystem-derived value now that dosing is removed
+    #: (see module docstring); calibrated against real melt-pressure
+    #: data (extrusion.csv's druck_1_IstP, ~300 bar) together with
+    #: alpha_drag/beta_pressure — see default_physical_parameters().
+    mdot_extruder_nom: np.ndarray = field(repr=False, default=None)
     R_gas: float = 8.314
 
     # Zone heater (per extruder k, per zone j) — shape (n_ext, n_zone)
@@ -126,22 +126,6 @@ class PhysicalParameters:
     thermal_mass_zone: np.ndarray = field(repr=False, default=None)
     Kp_zone: np.ndarray = field(repr=False, default=None)
     P_max_zone: np.ndarray = field(repr=False, default=None)
-
-    # Dosing (per extruder k, per component i) — shape (n_ext, n_comp)
-    rho_bulk: np.ndarray = field(repr=False, default=None)
-    dos_gain: np.ndarray = field(repr=False, default=None)
-    Kc_dos: np.ndarray = field(repr=False, default=None)
-    tau_N_dos: np.ndarray = field(repr=False, default=None)
-    tau_phi_dos: np.ndarray = field(repr=False, default=None)
-    N_dos_nom: np.ndarray = field(repr=False, default=None)
-
-    # Die head (per zone) — shape (n_die,)
-    die_thermal_mass: np.ndarray = field(repr=False, default=None)
-    die_heater_gain: np.ndarray = field(repr=False, default=None)
-    die_UA: np.ndarray = field(repr=False, default=None)
-    die_coupling: float = 5.0
-    Kp_die: np.ndarray = field(repr=False, default=None)
-    tau_die_actuator: np.ndarray = field(repr=False, default=None)
 
     # Bubble / film
     gamma_air: float = 1.4
@@ -446,20 +430,18 @@ def eliminate_fast_states(
 def default_physical_parameters(
     n_extruders: int,
     n_zones: int,
-    n_components: int,
-    n_die_zones: int,
     n_ibc: int,
     n_winders: int,
 ) -> PhysicalParameters:
     """
     Build a :class:`PhysicalParameters` instance with illustrative
-    defaults. Replicated units (extruders, zones, components, IBC
-    units, winders) get a small (+/-3%) deterministic per-index
-    variation rather than perfectly identical values — real hardware
-    is never exactly identical across units, and identical parameters
-    (combined with identical nominal inputs) make otherwise-symmetric
-    subsystems exactly rank-deficient in the controllability/
-    observability Gramian used by balanced truncation downstream.
+    defaults. Replicated units (extruders, zones, IBC units, winders)
+    get a small (+/-3%) deterministic per-index variation rather than
+    perfectly identical values — real hardware is never exactly
+    identical across units, and identical parameters (combined with
+    identical nominal inputs) make otherwise-symmetric subsystems
+    exactly rank-deficient in the controllability/observability
+    Gramian used by balanced truncation downstream.
     """
     rng = np.random.default_rng(0)
 
@@ -470,8 +452,15 @@ def default_physical_parameters(
         rho_melt=vary(900.0, n_extruders),
         cp_melt=vary(2200.0, n_extruders),
         lambda_melt=vary(0.25, n_extruders),
-        alpha_drag=vary(1.5e-7, n_extruders),
-        beta_pressure=vary(5.0e-11, n_extruders),
+        # alpha_drag/beta_pressure/mdot_extruder_nom are jointly calibrated
+        # (not independently arbitrary) so the nominal design-point pressure
+        # (_design_point()'s P_nom) lands at ~300 bar, matching real melt-
+        # pressure data (extrusion.csv's druck_1_IstP, mean ~300-340 bar) —
+        # the previous defaults (1.5e-7/5.0e-11) made the drag-flow term
+        # (alpha_drag*screw_speed_nom) LESS than the required throughput
+        # Q_nom, forcing P_nom negative and floor-clipped to 1 bar.
+        alpha_drag=vary(2.75e-7, n_extruders),
+        beta_pressure=vary(2.6e-10, n_extruders),
         bulk_modulus=vary(1.5e9, n_extruders),
         m0_visc=vary(0.03, n_extruders),
         n_powerlaw=vary(0.4, n_extruders),
@@ -482,22 +471,12 @@ def default_physical_parameters(
         outlet_relax_tau=vary(2.0, n_extruders),
         melt_temp_relax_tau=vary(8.0, n_extruders),
         screw_speed_nom=vary(100.0, n_extruders),
+        mdot_extruder_nom=vary(0.0165, n_extruders),
         h_zone=vary(25.0, n_extruders, n_zones),
         A_zone=vary(0.05, n_extruders, n_zones),
         thermal_mass_zone=vary(5.0e4, n_extruders, n_zones),
         Kp_zone=vary(50.0, n_extruders, n_zones),
         P_max_zone=vary(8000.0, n_extruders, n_zones),
-        rho_bulk=vary(550.0, n_extruders, n_components),
-        dos_gain=vary(2.0e-7, n_extruders, n_components),
-        Kc_dos=vary(0.5, n_extruders, n_components),
-        tau_N_dos=vary(3.0, n_extruders, n_components),
-        tau_phi_dos=vary(4.0, n_extruders, n_components),
-        N_dos_nom=vary(30.0, n_extruders, n_components),
-        die_thermal_mass=vary(3.0e4, n_die_zones),
-        die_heater_gain=vary(40.0, n_die_zones),
-        die_UA=vary(15.0, n_die_zones),
-        Kp_die=vary(30.0, n_die_zones),
-        tau_die_actuator=vary(6.0, n_die_zones),
         UA_ibc=vary(200.0, n_ibc),
         tau_ibc_speed=vary(2.0, n_ibc),
         ibc_air_thermal_mass=vary(1500.0, n_ibc),
@@ -527,12 +506,13 @@ class FirstPrinciplesModel:
     Parameters
     ----------
     params        : PhysicalParameters
-    n_extruders, n_zones, n_components, n_die_zones, n_ibc, n_winders
-                  : subsystem multiplicities. Defaults (3, 4, 5, 7, 3, 2)
-                    align extruder/IBC/winder counts with the real
-                    dataset (config.PhysicalModelConfig) rather than
-                    the README's illustrative 146-state configuration
-                    (4, 8, 5, 7, 3, 2) — see module docstring.
+    n_extruders, n_zones, n_ibc, n_winders
+                  : subsystem multiplicities. Defaults (3, 4, 3, 2) align
+                    extruder/IBC/winder counts with the real dataset
+                    (config.PhysicalModelConfig) rather than the README's
+                    illustrative 146-state configuration — see module
+                    docstring (dosing/die-head, part of that illustrative
+                    configuration, have been removed entirely).
     """
 
     def __init__(
@@ -540,19 +520,15 @@ class FirstPrinciplesModel:
         params: Optional[PhysicalParameters] = None,
         n_extruders: int = 3,
         n_zones: int = 4,
-        n_components: int = 5,
-        n_die_zones: int = 7,
         n_ibc: int = 3,
         n_winders: int = 2,
     ) -> None:
         self.n_ext = n_extruders
         self.n_zone = n_zones
-        self.n_comp = n_components
-        self.n_die = n_die_zones
         self.n_ibc = n_ibc
         self.n_wind = n_winders
         self.params = params or default_physical_parameters(
-            n_extruders, n_zones, n_components, n_die_zones, n_ibc, n_winders
+            n_extruders, n_zones, n_ibc, n_winders
         )
         self._build_layout()
 
@@ -570,18 +546,13 @@ class FirstPrinciplesModel:
             idx += size
             return s
 
-        n_e, n_z, n_c = self.n_ext, self.n_zone, self.n_comp
-        n_d, n_i, n_w = self.n_die, self.n_ibc, self.n_wind
+        n_e, n_z = self.n_ext, self.n_zone
+        n_i, n_w = self.n_ibc, self.n_wind
 
         self.sl_T = take(n_e * n_z)
         self.sl_P = take(n_e)
         self.sl_mdot_out = take(n_e)
         self.sl_T_melt = take(n_e)
-        self.sl_m_dos = take(n_e * n_c)
-        self.sl_N_dos = take(n_e * n_c)
-        self.sl_phi = take(n_e * n_c)
-        self.sl_T_die = take(n_d)
-        self.sl_u_die = take(n_d)
         self.sl_R = take(1)
         self.sl_h_film = take(1)
         self.sl_P_bub = take(1)
@@ -604,9 +575,6 @@ class FirstPrinciplesModel:
         # Inputs
         idx = 0
         self.sl_u_T_sp = take(n_e * n_z)
-        self.sl_u_mdot_feed = take(n_e * n_c)
-        self.sl_u_phi_set = take(n_e * n_c)
-        self.sl_u_T_sp_die = take(n_d)
         self.sl_u_N_ibc_set = take(n_i)
         self.sl_u_T_sp_cool = take(n_i)
         self.sl_u_v_haul_set = take(1)
@@ -643,14 +611,10 @@ class FirstPrinciplesModel:
         mu_nom = (p.m0_visc * np.exp(p.Ea_visc / (p.R_gas * T_nom))
                   * np.maximum(gamma_dot, 1e-6) ** (p.n_powerlaw - 1.0))
 
-        # Dosing: feed rate balanced against outflow at N_dos_nom.
-        mdot_out_dos_nom = p.rho_bulk * p.dos_gain * p.N_dos_nom  # (n_ext, n_comp)
-        phi_nom = mdot_out_dos_nom / np.sum(mdot_out_dos_nom, axis=1, keepdims=True)
-        rho_mix_nom = np.sum(phi_nom * p.rho_bulk, axis=1)  # (n_ext,)
-        mdot_extruder_nom = np.sum(mdot_out_dos_nom, axis=1)  # (n_ext,)
-
-        # Extruder pressure that makes Q_k match the dosing-fed throughput.
-        Q_nom = mdot_extruder_nom / np.where(rho_mix_nom > 0, rho_mix_nom, 900.0)
+        # Extruder inflow/mix density are now fixed nominal constants (see
+        # module docstring — dosing removed, no real-data counterpart).
+        mdot_extruder_nom = p.mdot_extruder_nom
+        Q_nom = mdot_extruder_nom / p.rho_melt
         P_nom = (p.alpha_drag * p.screw_speed_nom - Q_nom) * mu_nom / p.beta_pressure
         P_nom = np.clip(P_nom, 1.0e5, 5.0e7)
 
@@ -658,29 +622,15 @@ class FirstPrinciplesModel:
         mdot_total_nom = float(np.sum(mdot_extruder_nom))
 
         return dict(
-            T_nom=T_nom, mdot_out_dos_nom=mdot_out_dos_nom, phi_nom=phi_nom,
-            rho_mix_nom=rho_mix_nom, mdot_extruder_nom=mdot_extruder_nom,
+            T_nom=T_nom, mdot_extruder_nom=mdot_extruder_nom,
             P_nom=P_nom, v_z_nom=v_z_nom, mdot_total_nom=mdot_total_nom,
         )
 
     def nominal_inputs(self) -> np.ndarray:
         """A physically reasonable, mass-balanced nominal input vector u0 (README §2)."""
-        p = self.params
         dp = self._design_point()
         u = np.zeros(self.n_inputs)
         u[self.sl_u_T_sp] = dp["T_nom"]
-        u[self.sl_u_mdot_feed] = dp["mdot_out_dos_nom"].ravel()
-        u[self.sl_u_phi_set] = dp["phi_nom"].ravel()
-        # u_die's dynamics are a proportional (offset-prone) actuator law:
-        # u_die_dot = (Kp_die*(T_sp_die - T_die) - u_die) / tau. Steady state
-        # requires u_die = die_UA*(T_die-T_amb)/die_heater_gain (to balance
-        # heat loss) AND u_die = Kp_die*(T_sp_die - T_die) simultaneously, so
-        # T_sp_die must be offset above the die temperature target by the
-        # actuator's proportional droop (u_die_eq/Kp_die) rather than set
-        # equal to it — otherwise no consistent equilibrium exists and the
-        # operating-point Newton solve diverges trying to satisfy both.
-        u_die_eq = p.die_UA * (dp["T_nom"] - p.T_amb) / p.die_heater_gain
-        u[self.sl_u_T_sp_die] = dp["T_nom"] + u_die_eq / p.Kp_die
         u[self.sl_u_N_ibc_set] = 1200.0
         u[self.sl_u_T_sp_cool] = 288.15
         u[self.sl_u_v_haul_set] = 0.6   # m/s (~36 m/min)
@@ -731,14 +681,6 @@ class FirstPrinciplesModel:
         x[self.sl_P] = np.repeat(dp["P_nom"], 1)
         x[self.sl_mdot_out] = dp["mdot_extruder_nom"]
         x[self.sl_T_melt] = dp["T_nom"]
-        x[self.sl_m_dos] = 1.0
-        x[self.sl_N_dos] = self.params.N_dos_nom.ravel()
-        x[self.sl_phi] = dp["phi_nom"].ravel()
-        x[self.sl_T_die] = dp["T_nom"]
-        # Matches the T_sp_die offset applied in nominal_inputs() so u_die
-        # starts at its actual steady-state value instead of an arbitrary
-        # placeholder (previously 0.5, vs. a true equilibrium of O(10-100)).
-        x[self.sl_u_die] = p.die_UA * (dp["T_nom"] - p.T_amb) / p.die_heater_gain
         x[self.sl_R] = R_nom
         x[self.sl_h_film] = h_film_nom
         x[self.sl_P_bub] = P_bub_nom
@@ -779,18 +721,13 @@ class FirstPrinciplesModel:
     def dynamics(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
         """Nonlinear ODE right-hand side xdot = f(x, u)."""
         p = self.params
-        n_e, n_z, n_c = self.n_ext, self.n_zone, self.n_comp
+        n_e, n_z = self.n_ext, self.n_zone
         xdot = np.zeros_like(x)
 
         T = x[self.sl_T].reshape(n_e, n_z)
         P = x[self.sl_P]
         mdot_out = x[self.sl_mdot_out]
         T_melt = x[self.sl_T_melt]
-        m_dos = x[self.sl_m_dos].reshape(n_e, n_c)
-        N_dos = x[self.sl_N_dos].reshape(n_e, n_c)
-        phi = x[self.sl_phi].reshape(n_e, n_c)
-        T_die = x[self.sl_T_die]
-        u_die = x[self.sl_u_die]
         R = x[self.sl_R][0]
         h_film = x[self.sl_h_film][0]
         P_bub = x[self.sl_P_bub][0]
@@ -808,26 +745,11 @@ class FirstPrinciplesModel:
         T_drive = x[self.sl_T_drive]
 
         T_sp = u[self.sl_u_T_sp].reshape(n_e, n_z)
-        mdot_feed = u[self.sl_u_mdot_feed].reshape(n_e, n_c)
-        phi_set = u[self.sl_u_phi_set].reshape(n_e, n_c)
-        T_sp_die = u[self.sl_u_T_sp_die]
         N_ibc_set = u[self.sl_u_N_ibc_set]
         T_sp_cool = u[self.sl_u_T_sp_cool]
         v_haul_set = u[self.sl_u_v_haul_set][0]
         T_drive_set = u[self.sl_u_T_drive_set]
         sigma_web_set = u[self.sl_u_sigma_web_set]
-
-        # --- Dosing (§2) --------------------------------------------------
-        Q_dos = p.dos_gain * N_dos
-        mdot_out_dos = p.rho_bulk * Q_dos
-        m_dos_dot = mdot_feed - mdot_out_dos
-        N_dos_dot = (p.Kc_dos * (phi_set - phi)
-                     - (N_dos - p.N_dos_nom) / p.tau_N_dos)
-        mdot_out_dos_sum = np.sum(mdot_out_dos, axis=1, keepdims=True)
-        mdot_out_dos_sum = np.where(mdot_out_dos_sum <= 0, 1e-9, mdot_out_dos_sum)
-        phi_alg = mdot_out_dos / mdot_out_dos_sum
-        phi_dot = (phi_alg - phi) / p.tau_phi_dos
-        rho_mix = np.sum(phi * p.rho_bulk, axis=1)  # per extruder
 
         # --- Extruder (§1) -------------------------------------------------
         gamma_dot = p.shear_rate_gain * p.screw_speed_nom / 60.0
@@ -854,22 +776,14 @@ class FirstPrinciplesModel:
             T_dot[:, j] = (diffusion - convection + eta_diss[:, j]
                            + qdot_heater[:, j]) / (p.rho_melt * p.cp_melt)
 
-        mdot_in_extruder = np.sum(mdot_out_dos, axis=1)
-        P_dot = p.bulk_modulus / p.rho_melt * (mdot_in_extruder - mdot_out)
-        mdot_out_alg = Q_k * np.where(rho_mix > 0, rho_mix, p.rho_melt)
+        # Extruder infeed/mix density are fixed nominal constants (dosing
+        # removed — see module docstring); mdot_extruder_nom is already at
+        # the design-point mass balance so this residual is driven purely
+        # by mdot_out's own relaxation, not an unmodelled feed disturbance.
+        P_dot = p.bulk_modulus / p.rho_melt * (p.mdot_extruder_nom - mdot_out)
+        mdot_out_alg = Q_k * p.rho_melt
         mdot_out_dot = (mdot_out_alg - mdot_out) / p.outlet_relax_tau
         T_melt_dot = (T[:, -1] - T_melt) / p.melt_temp_relax_tau
-
-        # --- Die head (§3.1/3.2) -------------------------------------------
-        T_die_dot = np.zeros(self.n_die)
-        for j in range(self.n_die):
-            left = T_die[j - 1] if j > 0 else T_die[j]
-            right = T_die[j + 1] if j < self.n_die - 1 else T_die[j]
-            coupling = p.die_coupling * (left - 2 * T_die[j] + right)
-            T_die_dot[j] = (p.die_heater_gain[j] * u_die[j]
-                            - p.die_UA[j] * (T_die[j] - p.T_amb)
-                            + coupling) / p.die_thermal_mass[j]
-        u_die_dot = (p.Kp_die * (T_sp_die - T_die) - u_die) / p.tau_die_actuator
 
         # --- Bubble / film (§4/§5.1) ----------------------------------------
         mdot_total = float(np.sum(mdot_out))
@@ -928,11 +842,6 @@ class FirstPrinciplesModel:
         xdot[self.sl_P] = P_dot
         xdot[self.sl_mdot_out] = mdot_out_dot
         xdot[self.sl_T_melt] = T_melt_dot
-        xdot[self.sl_m_dos] = m_dos_dot.ravel()
-        xdot[self.sl_N_dos] = N_dos_dot.ravel()
-        xdot[self.sl_phi] = phi_dot.ravel()
-        xdot[self.sl_T_die] = T_die_dot
-        xdot[self.sl_u_die] = u_die_dot
         xdot[self.sl_R] = R_dot
         xdot[self.sl_h_film] = h_film_dot
         xdot[self.sl_P_bub] = P_bub_dot
@@ -1008,21 +917,19 @@ class FirstPrinciplesModel:
         """
         scale = np.maximum(np.abs(x_guess), 1.0)
 
-        # L_job/L_w (job-length and per-winder roll-length counters) and
-        # m_dos (accumulated dosed mass) are pure integrators: their xdot
-        # doesn't depend on their own state value at all (only on other
-        # states/inputs), so under normal operation they have no root and
-        # their row/column of the Jacobian is structurally zero — making
-        # the full-state Jacobian singular. That singularity was observed
-        # to make the solver diverge wildly (>1e10x) even from an otherwise
-        # -good guess. They're excluded from the root-solve here and held
-        # at their initial-guess value instead; that's still a valid
-        # linearisation point for them since their own dynamics don't
-        # depend on their value.
+        # L_job/L_w (job-length and per-winder roll-length counters) are
+        # pure integrators: their xdot doesn't depend on their own state
+        # value at all (only on other states/inputs), so under normal
+        # operation they have no root and their row/column of the Jacobian
+        # is structurally zero — making the full-state Jacobian singular.
+        # That singularity was observed to make the solver diverge wildly
+        # (>1e10x) even from an otherwise-good guess. They're excluded from
+        # the root-solve here and held at their initial-guess value
+        # instead; that's still a valid linearisation point for them since
+        # their own dynamics don't depend on their value.
         excluded = np.zeros(self.n_states, dtype=bool)
         excluded[self.sl_L_job] = True
         excluded[self.sl_L_w] = True
-        excluded[self.sl_m_dos] = True
         free = ~excluded
 
         def scaled_residual(z_free: np.ndarray) -> np.ndarray:

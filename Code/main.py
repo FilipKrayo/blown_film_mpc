@@ -303,7 +303,6 @@ class BlownFilmPipeline:
             phys_cfg = self._cfg.physical_model
             n_phys_inputs = FirstPrinciplesModel(
                 n_extruders=phys_cfg.n_extruders, n_zones=phys_cfg.n_zones,
-                n_components=phys_cfg.n_components, n_die_zones=phys_cfg.n_die_zones,
                 n_ibc=phys_cfg.n_ibc, n_winders=phys_cfg.n_winders,
             ).n_inputs
             if self._dataset.U_test.shape[1] != n_phys_inputs and cached.n_inputs == n_phys_inputs:
@@ -413,7 +412,6 @@ class BlownFilmPipeline:
 
         phys_model = FirstPrinciplesModel(
             n_extruders=phys_cfg.n_extruders, n_zones=phys_cfg.n_zones,
-            n_components=phys_cfg.n_components, n_die_zones=phys_cfg.n_die_zones,
             n_ibc=phys_cfg.n_ibc, n_winders=phys_cfg.n_winders,
         )
         horizon_seconds = self._cfg.mpc.prediction_horizon * self._cfg.data.sampling_time

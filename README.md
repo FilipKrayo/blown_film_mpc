@@ -15,7 +15,6 @@
 ## 📋 Table of Contents
 
 - [Overview](#-overview)
-- [Recent Updates](#-recent-updates)
 - [System Description](#-system-description)
   - [Monitored Stations](#monitored-stations)
   - [Key Process Variables](#key-process-variables)
@@ -48,6 +47,8 @@
 - [Project Structure](#-project-structure)
 - [Module Descriptions](#-module-descriptions)
   - [`config.py`](#configpy)
+  - [`physical_model.py`](#physical_modelpy)
+  - [`grey_box.py`](#grey_boxpy)
   - [`data_manager.py`](#data_managerpy)
   - [`system_identification.py`](#system_identificationpy)
   - [`model_reduction.py`](#model_reductionpy)
@@ -102,28 +103,6 @@ PEP 8, SOLID principles, and modern type-annotation standards.
 
 ---
 
-## 📝 Recent Updates
-
-### August 2026 — Grey-Box Real-Data Handling & Bug Fixes
-
-- **Fixed column name typo** ([config.py](Code/config.py)): Corrected `IstForederrate` → `IstFoerderrate` (German "Förderrate" / feed rate) across 15 dosing-rate entries in `ALL_COLUMNS`, resolving silent data-column dropping and warnings.
-
-- **Increased grey-box reduced order** ([config.py](Code/config.py)): Changed `grey_box_reduced_order` from 10 to 15 to retain more model fidelity before grey-box optimization, providing a wider safety margin when identifying the reduced linearised state space.
-
-- **Added progress bar to grey-box identification** ([grey_box.py](Code/grey_box.py)): Wrapped the L-BFGS-B optimization with a `tqdm` progress bar (evaluation count, not iteration count) to track grey-box parameter fitting progress, mirroring the pattern used in MPC weight optimization.
-
-- **Fixed grey-box real-SCADA-data coordinate space mismatch** ([main.py](Code/main.py), [simulation.py](Code/simulation.py)): 
-  - Added pipeline-level metadata tracking (`_real_data_mode`, `_phys_model`, `_u0`, `_y0`, `_active_outputs`) for grey-box identification path.
-  - Introduced `_predict_test()` helper that correctly transforms test data between the real SCADA input space (26 columns, scaled) and the physical model's native space (60 inputs, raw units, deviation coordinates) — fixes the crash `ValueError: matmul size 26 is different from 60` that occurred in model reduction and validation stages.
-  - Added cache guard: cached models identified in grey-box/physical mode now force rebuild (they require a freshly re-solved operating point, not available from cache).
-  - Extracted `ModelValidator.compute_metrics()` for flexible metrics computation on arbitrary predictions.
-
-These changes ensure the complete pipeline runs correctly when using grey-box identification on real SCADA data with fewer input columns than the physics model's full 60-input specification.
-
----
-
----
-
 ## 🏭 System Description
 
 A **co-extrusion blown film line** produces multi-layer plastic film
@@ -147,7 +126,7 @@ winding the collapsed film onto rolls.
 |----------|-----------|
 | **Controlled outputs** | Layer thickness (`SDickeIst`), melt temperature (`Massetemperatur`), melt pressure (`druck_IstP`), IBC speed, cooling device temperature, haul-off speed, roll diameter, web tension |
 | **Manipulated inputs** | Heating zone setpoints (`SollTemp`), thickness setpoints (`SDickeSoll`), IBC speed setpoints, cooling setpoints, haul-off speed setpoint, winder speed/tension setpoints |
-| **Disturbances** | Material bulk density, dosing proportions, blower load |
+| **Disturbances** | Material grade changes, blower load variations |
 
 ---
 
@@ -626,8 +605,8 @@ h_{total}(z,t)
 
 ### 10. Full-Order State Vector
 
-The complete first-principles model has state dimension
-$`n_x = 146`$, partitioned as:
+The complete first-principles model as originally formulated has state
+dimension $`n_x = 146`$, partitioned as:
 
 | Subsystem | States | Dimension |
 |-----------|--------|-----------|
@@ -639,6 +618,16 @@ $`n_x = 146`$, partitioned as:
 | Haul-off | $`v_{haul}`$, $`\sigma_{haul}`$, $`L_{job}`$ | 3 |
 | Winders 1 & 2 | $`\omega_{drum,w}`$, $`R_{roll,w}`$, $`L_w`$, $`\sigma_{web,w}`$, $`T_{drive,w}`$ | 10 |
 | **Total** | | **146** |
+
+> **Implementation note:** The dosing and die-head subsystems (74 of
+> these 146 states, and 37 of the full model's 60 inputs) have **no
+> counterpart in the real SCADA export** and have been removed from
+> `physical_model.py`. The extruder inflow rate is replaced by a fixed
+> nominal constant (`mdot_extruder_nom`). At the default multiplicities
+> (3 extruders × 4 zones, 3 IBC, 2 winders) the **implemented model**
+> has **49 states and 23 inputs** — the ODE/PDE physics above still
+> apply to the remaining subsystems; only the dosing (§2) and die-head
+> (§3) subsystems are absent.
 
 ---
 
@@ -661,29 +650,32 @@ The full nonlinear system can be written compactly as:
 \mathbf{y} \in \mathbb{R}^{58}
 ```
 
-The key coupling structure is:
+The key coupling structure is (blocks in *italics* are present in the
+theoretical model but **removed from the implementation** — see §10 note):
 
 ```
-[Dosing ODEs] ──► [Extruder PDEs] ──► [Die Head PDEs]
-                        │                     │
-                   [Pressure ODE]       [Melt Flow PDE]
-                        │                     │
-                        └──────────┬──────────┘
-                                   ▼
-                          [Bubble Dynamics PDEs]
-                                   │
-                    ┌──────────────┼──────────────┐
-                    ▼              ▼               ▼
-              [IBC Cooling]   [Air Ring]    [Film Thickness]
-                    │                            │
-                    └────────────────────────────┘
-                                   │
-                           [Haul-Off ODE]
-                                   │
-                    ┌──────────────┴──────────────┐
-                    ▼                             ▼
-              [Winder 1 ODEs]             [Winder 2 ODEs]
+[Dosing ODEs]* ──► [Extruder PDEs] ──► [Die Head PDEs]*
+                        │
+                   [Pressure ODE]
+                        │
+                        ▼
+               [Bubble Dynamics PDEs]
+                        │
+         ┌──────────────┼──────────────┐
+         ▼              ▼               ▼
+   [IBC Cooling]   [Air Ring]    [Film Thickness]
+         │                            │
+         └────────────────────────────┘
+                        │
+                [Haul-Off ODE]
+                        │
+         ┌──────────────┴──────────────┐
+         ▼                             ▼
+   [Winder 1 ODEs]             [Winder 2 ODEs]
 ```
+
+*Dosing feeds a fixed nominal throughput (`mdot_extruder_nom`) into the
+extruder pressure balance; die-head is omitted entirely.
 
 ---
 
@@ -701,30 +693,38 @@ because:
 | **Distributed parameters** | PDEs require spatial discretisation → very high state dimension |
 
 Instead, the PDE model **motivates the state space structure** and
-**informs signal selection** (which tags are inputs vs outputs),
-while the actual model matrices $`(A, B, C, D)`$ are identified
-from SCADA data using the **N4SID subspace algorithm** described
-in the [`system_identification.py`](#system_identificationpy) section.
+**informs signal selection** (which tags are inputs vs outputs).
+The actual model matrices $`(A, B, C, D)`$ are obtained from the
+implemented `FirstPrinciplesModel` (see `physical_model.py`) via
+numerical Jacobian linearisation, or estimated from SCADA data
+directly using the **N4SID subspace algorithm** (see
+[`system_identification.py`](#system_identificationpy)).
 
-The reduction from $`n_x = 146`$ (first-principles) to
-$`\tilde{n} \approx 22`$ (MPC-ready) is achieved through the
-**model order reduction pipeline**:
+The implemented model (49 states, 23 inputs, 22 outputs at default
+multiplicities) is already substantially reduced compared to the
+theoretical 146-state system. The identification and MPC reduction
+pipeline reduces it further:
 
 ```
-First-Principles PDE Model  →  n = 146
-         ↓  Linearisation at operating point
-Linearised State Space      →  n = 146
-         ↓  Singular Perturbation (fast states)
-Slow Subsystem              →  n ≈ 90
-         ↓  Balanced Truncation (HSV)
-Balanced Reduced Model      →  n ≈ 40
+Implemented Physical Model  →  n = 49  (dosing/die-head removed)
+         ↓  Linearisation at real-data operating point
+         ↓  (GreyBoxIdentifier, numerical Jacobian)
+Linearised State Space      →  n = 49
+         ↓  Balanced Truncation (HSV, grey_box_reduced_order)
+Grey-Box Reduced Model      →  n ≈ 20
+         ↓  A/B/C direct optimisation (L-BFGS-B, windowed simulation)
+Identified Model            →  n ≈ 20
+         ↓  Balanced Truncation (BT)
+Balanced Reduced Model      →  n ≈ n_red (default 22)
          ↓  POD / Galerkin Projection
-POD Reduced Model           →  n ≈ 22
-         ↓  ZOH Discretisation (Ts = 3 s)
-Discrete MPC Model          →  n ≈ 22
-         ↓  Integrator Augmentation
-Offset-Free MPC Model       →  n ≈ 80  (22 dynamic + 58 disturbance)
+POD Reduced Model           →  n ≤ n_red
+         ↓  Integrator Augmentation (one per output)
+Offset-Free MPC Model       →  n_aug = n + n_y  (≈ 42 at defaults)
 ```
+
+The N4SID black-box path (`--identification_method n4sid`) bypasses
+the physical model entirely and estimates $(A, B, C, D)$ directly
+from SCADA data at the configured `n_id` order.
 
 > **Note:** The numerical solution of the full PDE system requires
 > implicit time-stepping (e.g. Crank–Nicolson for the thermal PDEs),
@@ -1478,33 +1478,33 @@ $`\rho(\hat{\mathbf{A}}_d) < 1`$.
 ### 8. Summary: Linearisation Pipeline
 
 ```
-Nonlinear PDE/ODE System  f(x, u) = 0
+Nonlinear PDE/ODE System  f(x, u) = 0  [theoretical, n = 146]
             │
             │  Spatial discretisation
-            │  (FDM for extruder, FEM for die,
-            │   Galerkin for bubble)
+            │  (FDM for extruder, Galerkin for bubble)
+            │  + dosing/die-head removed (no real-data counterpart)
             ▼
-Nonlinear ODE System  ẋ = f(x, u)  [n = 146]
+Nonlinear ODE System  ẋ = f(x, u)  [implemented, n = 49]
             │
             │  Newton-Raphson steady-state solve
-            │  f(x₀, u₀) = 0
+            │  f(x₀, u₀) = 0  (warm-started from real-data mean)
             ▼
 Operating Point  (x₀, u₀, y₀)
             │
             │  First-order Taylor expansion
-            │  Analytical Jacobians ∂f/∂x, ∂f/∂u
+            │  Numerical Jacobians ∂f/∂x, ∂f/∂u
             ▼
-Continuous-Time LTI  ẋ̃ = Ac x̃ + Bc ũ  [146 × 146]
+Continuous-Time LTI  ẋ̃ = Ac x̃ + Bc ũ  [49 × 49]
             │
             │  ZOH discretisation
-            │  Ts = 3 s (Van Loan method)
+            │  Ts = Ts_data (Van Loan method)
             ▼
 Discrete-Time LTI  x̃_{k+1} = Ad x̃_k + Bd ũ_k  [146 × 146]
             │
-            │  In practice: replaced by N4SID
-            │  identification from SCADA data
+            │  In practice (grey-box path): balanced truncation to
+            │  grey_box_reduced_order, then A/B/C direct optimisation
             ▼
-Identified Model  (Â_d, B̂_d, Ĉ_d, D̂_d)  [n_id × n_id]
+Identified Model  (Â_d, B̂_d, Ĉ_d, D̂_d)  [≈grey_box_reduced_order]
             │
             │  Model order reduction pipeline
             │  (BT → POD → ZOH → Augmentation)
@@ -1569,7 +1569,7 @@ The QP is solved using **OSQP** via **CVXPY**.
 
 ```
 blown_film_mpc/
-├── extrusion.csv                    # Example real dataset (optional, not required)
+├── extrusion.csv                    # Real SCADA dataset (optional)
 ├── extrusion_data_legend.xlsx       # SCADA tag reference for extrusion.csv
 ├── Co_Extrusion_Blown_Film_Line_Dynamics.pdf  # Background reading on the physical process
 ├── requirements.txt                 # Python dependencies
@@ -1579,8 +1579,10 @@ blown_film_mpc/
 └── Code/
     ├── main.py                     # Entry point & pipeline orchestrator
     ├── config.py                   # All configuration, constants & column defs
+    ├── physical_model.py            # First-principles nonlinear ODE model (49 states, 23 inputs)
+    ├── grey_box.py                  # Grey-box identification: linearise → reduce → optimise A/B/C
     ├── data_manager.py              # Data loading, preprocessing & splitting
-    ├── system_identification.py     # N4SID subspace identification
+    ├── system_identification.py     # N4SID black-box subspace identification
     ├── model_reduction.py           # Balanced truncation, POD, integrator augmentation
     ├── accuracy.py                  # Shared accuracy-gate primitives (R² checks, ModelAccuracyError)
     ├── estimation.py                # Kalman filter & state estimation
@@ -1612,13 +1614,47 @@ blown_film_mpc/
 ### `config.py`
 Central configuration hub. Contains:
 - **`ALL_COLUMNS`** — complete list of all SCADA dataset column names.
-- **`INPUT_COLS`** — manipulated variable column names.
-- **`OUTPUT_COLS`** — controlled variable column names.
+- **`INPUT_COLS`** — 26 manipulated-variable column names (includes 3 layer-thickness setpoints `SDickeSoll` that are present in the real data but have no physical-model actuation pathway and are not mapped by the grey-box path).
+- **`OUTPUT_COLS`** — 22 controlled-variable column names.
 - **Typed dataclasses** — `DataConfig`, `IdentificationConfig`,
-  `ReductionConfig`, `KalmanConfig`, `MPCConfig`, `SimulationConfig`,
-  `ProjectConfig` — all frozen and documented.
+  `ReductionConfig`, `AccuracyConfig`, `KalmanConfig`, `MPCConfig`,
+  `SimulationConfig`, `PhysicalModelConfig`, `ProjectConfig` — all
+  frozen and documented.
 
 > ⚙️ **All tunable parameters live here. No magic numbers elsewhere.**
+
+---
+
+### `physical_model.py`
+Executable first-principles nonlinear ODE model of the blown film line.
+
+| Class | Responsibility |
+|-------|---------------|
+| `PhysicalParameters` | Frozen dataclass of all physical constants and calibrated parameters |
+| `FirstPrinciplesModel` | Nonlinear ODE `dynamics()`, output map `outputs()`, operating-point Newton solve, numerical Jacobian linearisation, ZOH discretisation, singular-perturbation state elimination |
+
+At the default multiplicities (3 extruders × 4 zones, 3 IBC, 2 winders)
+the model has **49 states, 23 inputs, 22 outputs**. The dosing and
+die-head subsystems present in the theoretical model (§2/§3 above) are
+not implemented — see §10 note. The extruder melt-pressure nominal
+operating point is calibrated to ~300 bar to match real `druck_1_IstP`
+data.
+
+---
+
+### `grey_box.py`
+Grey-box system identification using the physical model as a structural
+prior.
+
+| Function / Class | Responsibility |
+|------------------|---------------|
+| `map_real_inputs_to_model()` | Convert 26 real SCADA input columns → 23 model inputs with engineering-unit conversions (°C↔K, bar↔Pa, %↔rpm, m/min↔m/s, N↔Pa via tension/stress relation) |
+| `map_model_outputs_to_real()` | Convert 22 model outputs → real SCADA order/units for accuracy comparison |
+| `GreyBoxIdentifier` | (1) Linearise `FirstPrinciplesModel` at the real-data mean; (2) reduce to `grey_box_reduced_order` states via balanced truncation; (3) optimise A/B/C directly via L-BFGS-B with short-window simulation; returns a `StateSpaceModel` |
+
+Output columns with zero variance (dead/disconnected SCADA tags) and
+`ST112_VARAbzug_1_IstZu` (a status flag, not a speed) are excluded from
+the cost and accuracy comparison automatically.
 
 ---
 
@@ -1628,7 +1664,7 @@ Handles the full data lifecycle.
 | Class | Responsibility |
 |-------|---------------|
 | `IODataset` | Immutable container for scaled train/test I/O arrays |
-| `SyntheticDataGenerator` | Generates stable LTI-driven test data |
+| `SyntheticDataGenerator` | Generates stable LTI-driven test data from the physical model |
 | `DataManager` | Load → validate → clean → scale → split |
 
 **Preprocessing steps:**
@@ -1636,9 +1672,10 @@ Handles the full data lifecycle.
 2. Drop fully-NaN columns
 3. Forward-fill / backward-fill short gaps (configurable limit)
 4. Drop remaining NaN rows
-5. Z-score outlier removal (configurable threshold)
-6. `RobustScaler` normalisation
-7. Chronological 70/30 train-test split
+5. Drop idle/startup rows where any extruder's melt pressure is below `DataConfig.min_running_pressure_bar` (50 bar by default — no running-status flag is exported, so pressure is the only proxy)
+6. Z-score outlier removal (configurable threshold)
+7. `RobustScaler` normalisation
+8. Chronological 70/30 train-test split
 
 ---
 
@@ -1851,17 +1888,18 @@ python main.py --no_show --output_dir results
 |------|---------|--------------|
 | `--data` | `None` | Path to CSV/Excel data file (omit for synthetic data) |
 | `--output_dir` | `outputs` | Directory for figures and report |
-| `--n_id` | `20` | N4SID model order |
-| `--n_red` | `12` | Target order after balanced truncation |
+| `--identification_method` | `physical` | `physical`: grey-box (linearise + optimise `FirstPrinciplesModel`). `n4sid`: black-box N4SID subspace identification |
+| `--n_id` | `146` | N4SID model order (only used with `--identification_method n4sid`) |
+| `--n_red` | `22` | Target order after balanced truncation |
 | `--min_r2` | `0.95` | Required worst-case per-output R² (accuracy gate) |
-| `--max_n_states` | `60` | Ceiling for automatic N4SID order escalation on gate failure |
+| `--max_n_states` | `146` | Ceiling for automatic N4SID order escalation on gate failure |
 | `--max_n_states_bt` | `50` | Ceiling for automatic reduction-order escalation on gate failure |
 | `--no_accuracy_gate` | `False` | Disable the minimum-accuracy gate entirely (debugging only) |
 | `--Ts` | `None` (auto) | Sampling time in seconds. Auto-detected from data timestamps for real data (falls back to 3.0s); explicit values override auto-detection |
 | `--Np` | `20` | MPC prediction horizon |
 | `--Nc` | `8` | MPC control horizon |
 | `--T_sim` | `300` | Closed-loop simulation steps |
-| `--no_param_opt` | `False` | Skip parameter optimisation after N4SID |
+| `--no_param_opt` | `False` | Skip parameter optimisation after N4SID (only used with `--identification_method n4sid`) |
 | `--optimise_weights` | `False` | Run MPC weight optimisation (Nelder-Mead), ignoring any cached weights, and cache the result |
 | `--optimise_model` | `False` | Force fresh identification + reduction, ignoring any cached model, and cache the result |
 | `--model_path` | `saved/reduced_model.pkl` | Path to load/save the cached reduced model |
@@ -1881,13 +1919,14 @@ bounds, priority weights, etc.) is edited directly in `config.py`.
 
 | Dataclass | Key fields |
 |-----------|-----------|
-| `DataConfig` | `sampling_time`, `train_fraction`, `outlier_zscore`, `synthetic_samples`, `random_seed` |
-| `IdentificationConfig` | `n_states`, `n_block_rows`, `optimise_params`, `optimisation_method` |
+| `DataConfig` | `sampling_time`, `train_fraction`, `outlier_zscore`, `min_running_pressure_bar`, `synthetic_samples`, `random_seed` |
+| `IdentificationConfig` | `n_states`, `n_block_rows`, `optimise_params`, `optimisation_method`, `method` |
 | `ReductionConfig` | `n_states_bt`, `bt_energy_tolerance`, `pod_energy_tolerance` |
 | `AccuracyConfig` | `min_r2`, `enabled`, `max_n_states`, `n_states_step`, `max_n_states_bt`, `n_states_bt_step` |
 | `KalmanConfig` | `process_noise_scale`, `measurement_noise_scale` |
 | `MPCConfig` | `prediction_horizon`, `control_horizon`, `u_bound`, `du_bound`, `y_bound`, `q_thickness_weight`, `q_temperature_weight`, `r_weight`, `optimise_weights`, `weight_opt_iterations` |
 | `SimulationConfig` | `n_steps`, `noise_std`, `ref_step_time_1/2/3`, `ref_amplitude_1/2` |
+| `PhysicalModelConfig` | `n_extruders`, `n_zones`, `n_ibc`, `n_winders`, `grey_box_reduced_order`, `grey_box_max_iter`, `enable_singular_perturbation` |
 
 `ProjectConfig` bundles all of the above and is what `main.py` builds
 from the parsed CLI arguments before constructing `BlownFilmPipeline`.
@@ -2034,7 +2073,7 @@ proceed — checked twice:
 
 | Stage | Checked against | On failure |
 |-------|------------------|------------|
-| Post-identification | Training data | Escalate `n_states` by `n_states_step` (default 5), up to `--max_n_states` (default 60) |
+| Post-identification | Training data | Escalate `n_states` by `n_states_step` (default 5), up to `--max_n_states` (default 146; only used with `--identification_method n4sid`) |
 | Post-reduction | Held-out test data | Escalate `n_states_bt` by `n_states_bt_step` (default 2), up to `--max_n_states_bt` (default 50) |
 
 If escalation exhausts its ceiling without meeting the threshold, a

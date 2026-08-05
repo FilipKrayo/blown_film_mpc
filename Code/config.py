@@ -603,6 +603,11 @@ class DataConfig:
     synthetic_samples: int = 3_000
     synthetic_noise_std: float = 0.02
     random_seed: int = 42
+    #: Rows where any extruder's melt pressure (druck_1_IstP, bar) falls
+    #: below this are treated as idle/startup and dropped (see
+    #: data_manager._EXTRUDER_PRESSURE_COLS) -- well below the ~300 bar
+    #: nominal operating pressure but well above a stopped-screw reading.
+    min_running_pressure_bar: float = 50.0
 
 
 @dataclass(frozen=True)
@@ -697,17 +702,18 @@ class PhysicalModelConfig:
 
     Defaults align extruder/IBC/winder counts with the real dataset
     (``config.INPUT_COLS``/``OUTPUT_COLS``: 3 extruders x 4 zone
-    setpoints each, 3 IBC units, 2 winders); zone/component/die-zone
-    counts are internal spatial/physical resolution choices not tied
-    to a specific SCADA tag count. The resulting state count is NOT
-    forced to the README's illustrative 146 (see physical_model.py
+    setpoints each, 3 IBC units, 2 winders); ``n_zones`` is an internal
+    spatial resolution choice not tied to a specific SCADA tag count.
+    The model's former dosing/die-head subsystems (and their
+    ``n_components``/``n_die_zones`` multiplicities) have been removed
+    entirely — their inputs had no real-data counterpart at all (see
+    physical_model.py module docstring). The resulting state count is
+    NOT forced to the README's illustrative 146 (see physical_model.py
     module docstring) — it follows directly from these multiplicities.
     """
 
     n_extruders: int = 3
     n_zones: int = 4
-    n_components: int = 5
-    n_die_zones: int = 7
     n_ibc: int = 3
     n_winders: int = 2
     grey_box_max_iter: int = 30
@@ -716,9 +722,9 @@ class PhysicalModelConfig:
     # physical model is linearised ONCE (at the real-data mean operating
     # point), reduced to this order via balanced truncation (HSV energy
     # analysis on the real dataset showed a knee around n=5, capturing
-    # ~88% of Hankel-singular-value energy — 15 keeps a wider safety margin),
+    # 96.49% of Hankel-singular-value energy — 20 keeps a wider safety margin),
     # then A/B/C (not D, which is n-independent) are optimised directly.
-    grey_box_reduced_order: int = 15
+    grey_box_reduced_order: int = 20
 
     # Singular perturbation (README's "Time-scale separation" pipeline
     # step — eliminates states faster than the MPC sample rate can
